@@ -4,7 +4,7 @@ import matplotlib.animation as animation
 import copy
 
 
-from potential_field_method import PotentialFieldMethod, HazardSource, Road
+from potential_field_method import PotentialFieldMethod, MovingObstacle, Road
 
 
 
@@ -24,12 +24,12 @@ pfm.append_lane(lane_x, lane_y)
 # pfm.append_lane(lane_x, lane_y)
 
 #create obstacle
-ob1 = HazardSource()
+ob1 = MovingObstacle()
 # ob1.set_position(40, 5.0, yaw=np.pi/6)
 ob1.set_position(35, -3.5)
 pfm.append_obstacle(ob1)
 
-# ob2 = HazardSource()
+# ob2 = MovingObstacle()
 # # ob1.set_position(40, 5.0, yaw=np.pi/6)
 # ob2.set_position(35 + 80, -3.5)
 # pfm.append_obstacle(ob2)
@@ -73,7 +73,7 @@ Z = pfm.overall_risk_potential(X, Y)
 kwargs = {
     'cmap': plt.cm.jet, 
     'vmin': 0,
-    'vmax': HazardSource.weight*1.2,
+    'vmax': MovingObstacle.weight*1.2,
     'alpha': 0.7,
 }
 
@@ -94,9 +94,9 @@ def update(frame):
     pfm.update(dt)
 
     # append to plot lists
-    x_plot.append(pfm.x)
-    y_plot.append(pfm.y)
-    z_plot.append(pfm.overall_risk_potential(pfm.x, pfm.y))
+    x_plot.append(pfm.ego.x)
+    y_plot.append(pfm.ego.y)
+    z_plot.append(pfm.overall_risk_potential(pfm.ego.x, pfm.ego.y))
     # z_plot = pfm.overall_risk_potential(x_plot, y_plot)
     
     # Update surface

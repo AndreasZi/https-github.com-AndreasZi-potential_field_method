@@ -5,6 +5,7 @@ from scipy.interpolate import interp2d
 from scipy.integrate import cumtrapz
 from typing import List
 
+
 # This module is the python implementation of the artificial potential field method for autonomous driving
 #
 # The basis for this algorithm is the following paper:
@@ -16,6 +17,51 @@ from typing import List
 
 
 
+class VehicleModel:
+    """this is a simplified vehicle dynamics model, to showcase the functionality of the module"""
+    x = None
+    y = None
+
+    yaw = None
+    yaw_rate = None
+        
+    v = None
+    a = None
+
+    # some default values for the vehicle sizes
+    length = 5
+    width = 2
+
+
+    def set_position(self, x, y, yaw=0.0, v=0.0):
+        self.x = x
+        self.y = y
+        self.yaw = yaw
+        self.v = v
+
+
+    def update_position(self, time):
+        """move the obstacle on a straigth path based on its yaw angle and speed"""
+        self.x += self.v*time*np.cos(self.yaw)
+        self.y += self.v*time*np.sin(self.yaw)
+
+
+    def predict_position(self, yaw_rate_candidate, time):
+        """predict the points on a trajctory for a fixed yaw rate for a set number of moments in time"""
+
+        if type(time) is float:
+            # if one singular timestep is given, change to minimal np array
+            time = np.array([0, time])
+
+        #calculate the argument of the trigonometric functions first
+        arg = self.yaw+yaw_rate_candidate*time
+        return np.array([cumtrapz(self.v*time[1]*np.cos(arg)), cumtrapz(self.v*time[1]*np.sin(arg))]) + np.array([[self.x], [self.y]])
+    
+
+        
+    def plotoutline(self):
+        pass
+
 
 
 
@@ -26,17 +72,9 @@ class HazardSource:
     variance_x = 27.8**2
     variance_y = 3.05**2
 
-    def __init__(self) -> None:
-        self.x = None
-        self.y = None
-        self.yaw = None
-        
-        self.v = None
-        
-        self.length = 5
-        self.width = 2
-
-        
+    # center of the hazard
+    x = None
+    y = None
 
 
         
@@ -50,35 +88,28 @@ class HazardSource:
         X = np.array(X)
         Y = np.array(Y)
 
+        
+        return self.weight*np.exp(-(X)**2/(self.variance_x)-(Y)**2/(self.variance_y))
+
+    
+    
+class MovingObstacle(HazardSource, VehicleModel):
+    
+
+    def get_risk_potential(self, X, Y):
+        """
+        Determine the risk potential at given position.
+        X and Y need to be numpy arrays with values of x and y respectively
+        """
+        # convert to np array
+        X = np.array(X)
+        Y = np.array(Y)
+
         # create local coordinates system
         X_local = (X-self.x)*np.cos(self.yaw)+(Y-self.y)*np.sin(self.yaw)
         Y_local = (X-self.x)*np.sin(-self.yaw)+(Y-self.y)*np.cos(self.yaw)
         
-        # choose what model for the potential function should be used
-        return self.risk_model(X_local, Y_local)
-
         
-    
-    def set_position(self, x, y, yaw=0.0, v=0.0):
-        self.x = x
-        self.y = y
-        self.yaw = yaw
-        self.v = v
-
-
-    def update_position(self, time):
-        """move the obstacle on a straigth path based on its yaw angle and speed"""
-        self.x += self.v*time*np.cos(self.yaw)
-        self.y += self.v*time*np.sin(self.yaw)
-
-            
-    def bell_curve(self, X, Y):
-        """basic function to describe the risk potential field as used in original paper, when length is assumed as 0"""
-        return self.weight*np.exp(-(X)**2/(self.variance_x)-(Y)**2/(self.variance_y))
-    
-
-    def risk_model(self, X, Y): 
-        """this is the default model as seen in the original paper"""
 
         result = np.zeros_like(X)
 
@@ -88,22 +119,19 @@ class HazardSource:
         
         # seperate the result into 3 cases
         # case 1 is behind the obstacle
-        case1 = np.less_equal(X, X_obstacle_rear)
-        result[case1] = self.bell_curve(X-X_obstacle_rear, Y)[case1]
+        case1 = np.less_equal(X_local, X_obstacle_rear)
+        result[case1] = super().get_risk_potential(X_local-X_obstacle_rear, Y_local)[case1]
 
         # case 2 is along the obstacle, in this section the function acts as a 1dim gaussean function
-        case2 = np.logical_and(np.greater(X, X_obstacle_rear), np.less(X, X_obstacle_front))
-        result[case2] = self.bell_curve(np.zeros(X.shape), Y)[case2]
+        case2 = np.logical_and(np.greater(X_local, X_obstacle_rear), np.less(X_local, X_obstacle_front))
+        result[case2] = super().get_risk_potential(np.zeros(X.shape), Y_local)[case2]
         
         # same as case 1 but uses the other end of the obstacle as median
-        case3 = np.greater_equal(X, X_obstacle_front)
-        result[case3] = self.bell_curve(X-X_obstacle_front, Y)[case3]
+        case3 = np.greater_equal(X_local, X_obstacle_front)
+        result[case3] = super().get_risk_potential(X_local-X_obstacle_front, Y_local)[case3]
 
         return result
     
-    
-    def plotoutline(self):
-        pass
 
 
 
@@ -135,7 +163,7 @@ class Road(HazardSource):
                 points_interp = np.interp(X, lane[0], lane[1])
 
                 #calculate risk potential along lane and subtract it from the result
-                risk_potential -= self.bell_curve(0, Y-points_interp)
+                risk_potential -= super().get_risk_potential(0, Y-points_interp)
                 
             return risk_potential
         
@@ -157,21 +185,23 @@ class PotentialFieldMethod:
     def __init__(self) -> None:
 
         # state of the ego vehicle
-        self.x = None
-        self.y = None
-        self.yaw = None
-        self.v = None
+        self.ego = VehicleModel()
+
+        self.ego.x = None
+        self.ego.y = None
+        self.ego.yaw = None
+        self.ego.v = None
         self.v_target = 50/3.6
         self.a_max = 3
 
         # parameters that define the driving behaviour
-        self.yaw_rate_candidates = np.linspace(-0.5,0.5,25)
+        self.yaw_rate_candidates = np.linspace(-0.5,0.5,35)
         self.search_time = np.linspace(0,1,18)
         self.performance_weights = np.ones(self.search_time.shape)
         self.q = 200 # weight for punishing aggressive steering
 
         # containers for obstacles and road    
-        self._obstacles:List[HazardSource] = []
+        self._obstacles:List[MovingObstacle] = []
         self._road = Road()
         self._target = None
 
@@ -206,33 +236,19 @@ class PotentialFieldMethod:
             
         return result
     
-    def set_target(self, x,y):
+    def set_target(self, x,y, weight=None):
         target = HazardSource()
-        target.weight *=-1
-        target.set_position(x,y)
+        if weight == None:
+            target.weight *=-1
+        else:
+            target.weight = weight
+        target.x = x
+        target.y = y
 
         self._target = target
 
     
 
-    def predict_position(self, yaw_rate_candidate = None, time = None):
-        """predict the points on a trajctory for a fixed yaw rate for a set number of moments in time"""
-
-        if time is None:
-            # if no time is specified, use self.search_time
-            time = self.search_time
-        elif type(time) is float:
-            # if one singular timestep is given, change to minimal np array
-            time = np.array([0, time])
-
-        if yaw_rate_candidate is None:
-            # if no yaw rate is specified, use ideal yaw rate
-            yaw_rate_candidate = self.ideal_yaw_rate
-
-
-        #calculate the argument of the trigonometric functions first
-        arg = self.yaw+yaw_rate_candidate*time
-        return np.array([cumtrapz(self.v*time[1]*np.cos(arg)), cumtrapz(self.v*time[1]*np.sin(arg))]) + np.array([[self.x], [self.y]])
     
 
     def performance_index(self, yaw_rate_candidate):
@@ -240,7 +256,7 @@ class PotentialFieldMethod:
         The performance J and the correlating trajectory are returnd as a list [J, trajectory]
         """
 
-        trajectory = self.predict_position(yaw_rate_candidate)
+        trajectory = self.ego.predict_position(yaw_rate_candidate, self.search_time)
 
         # original would be np.sum, but np. average should allow for better comparability
         J = np.average((self.overall_risk_potential(*trajectory) + self.q*yaw_rate_candidate**2)*self.performance_weights[1:])
@@ -281,7 +297,7 @@ class PotentialFieldMethod:
         result = sorted(performance, key=lambda a: a[0])[0]
         
         #save all the trajectories for analysis purpose
-        self.ideal_trajectory = self.predict_position(result[1])
+        self.ideal_trajectory = self.ego.predict_position(result[1],self.search_time)
         self.ideal_yaw_rate = result[1]
 
         return self.ideal_yaw_rate
@@ -289,7 +305,7 @@ class PotentialFieldMethod:
 
 
     
-    def append_obstacle(self, obstacle:HazardSource):
+    def append_obstacle(self, obstacle:MovingObstacle):
         if None in [obstacle.x, obstacle.y, obstacle.yaw]:
             print("position of obstacle is not defined")
         self._obstacles.append(obstacle)
@@ -300,33 +316,32 @@ class PotentialFieldMethod:
 
     
     def set_position(self, x, y, yaw=None, v=None):
-        self.x = x
-        self.y = y
+        self.ego.x = x
+        self.ego.y = y
 
-        if yaw is None and self.yaw is None:
-            self.yaw = 0.0
+        if yaw is None and self.ego.yaw is None:
+            self.ego.yaw = 0.0
         elif yaw is not None:
-            self.yaw = yaw
+            self.ego.yaw = yaw
 
-        if v is None and self.v is None:
-            self.v = 0.0
+        if v is None and self.ego.v is None:
+            self.ego.v = 0.0
         elif v is not None:
-            self.v = v
+            self.ego.v = v
 
     
     def update_position(self, time):
         """This is a very simplified model to do trajectory modeling"""
         # update position this is done on previous speed
-        pos = self.predict_position(self.ideal_yaw_rate, time = time)
-        self.x, self.y = pos.flatten()
+        pos = self.ego.predict_position(self.ideal_yaw_rate, time = time)
+        self.ego.x, self.ego.y = pos.flatten()
         
         if self.use_longitudal_control:
             # update speed
             a = self.find_ideal_acceleration(time)
-            self.v += a*time
-
+            self.ego.v += a*time
         # update angle
-        self.yaw += self.ideal_yaw_rate*time
+        self.ego.yaw += self.ideal_yaw_rate*time
 
     
     def update(self, time):
@@ -344,21 +359,21 @@ class PotentialFieldMethod:
 
 
     def front_zone(self):
-        X = np.linspace(2, 5, 10) + self.x
-        Y = np.zeros_like(X) + self.y
+        X = np.linspace(2, 5, 10) + self.ego.x
+        Y = np.zeros_like(X) + self.ego.y
 
         return self.overall_risk_potential(X,Y).mean()
 
 
     def center_zone(self):
-        X = np.linspace(0,0,1) + self.x
-        Y = np.linspace(0,0,1) + self.y
+        X = np.linspace(0,0,1) + self.ego.x
+        Y = np.linspace(0,0,1) + self.ego.y
         return self.overall_risk_potential(X,Y).mean()
 
 
     def rear_zone(self):
-        X = np.linspace(-5, -2, 10) + self.x
-        Y = np.zeros_like(X) + self.y
+        X = np.linspace(-5, -2, 10) + self.ego.x
+        Y = np.zeros_like(X) + self.ego.y
 
         return self.overall_risk_potential(X,Y).mean()
 
@@ -378,7 +393,7 @@ class PotentialFieldMethod:
         self.zone_values = zone_values
 
         
-        speed_dif = self.v_target - self.v
+        speed_dif = self.v_target - self.ego.v
 
         a = np.clip(self.p*(zone_values[0]-1) + self.d*zone_val_dif[0] + speed_dif, -self.a_max, self.a_max)
 
@@ -393,7 +408,7 @@ if __name__ == "__main__":
     pfm = PotentialFieldMethod()
 
     # add obstacle and set its position
-    obstacle = HazardSource()
+    obstacle = MovingObstacle()
     obstacle.set_position(0, 0, 0.0*np.pi)
     obstacle.length = 5
     obstacle.width = 2
@@ -449,6 +464,4 @@ if __name__ == "__main__":
     ax.set_title("LUT model")
 
     plt.show()
-
-
 

@@ -4,7 +4,7 @@ import matplotlib.animation as animation
 import copy
 
 
-from potential_field_method import PotentialFieldMethod, HazardSource, Road
+from potential_field_method import PotentialFieldMethod, MovingObstacle, Road
 
 
 # simulation time
@@ -22,18 +22,18 @@ lane_y = np.zeros_like(lane_x)
 pfm.append_lane(lane_x, lane_y)
 
 #create obstacle
-ob1 = HazardSource()
+ob1 = MovingObstacle()
 pfm.append_obstacle(ob1)
 
 
 # setup of car states
 pfm.set_position(0,0, 0, 14) #set ego position (speed is in m/s)
-ob1.set_position(100, -1.75, 0, v=-14)
+ob1.set_position(50, -1.75, 0, v=4)
 
 # create second model using new calculation
 pfm_mod = copy.deepcopy(pfm)
 pfm_mod.use_dynamic_model = True
-pfm_mod.d=20
+pfm_mod.d=10
 
 # empty list to keep track of results
 x_plot = []
@@ -68,7 +68,7 @@ Z = pfm.overall_risk_potential(X, Y)
 kwargs = {
     'cmap': plt.cm.jet, 
     'vmin': 0,
-    'vmax': HazardSource.weight*1.2,
+    'vmax': MovingObstacle.weight*1.2,
     'alpha': 0.7,
 }
 background = ax.plot_surface(X,Y,Z, **kwargs)
@@ -78,8 +78,8 @@ ego_path = ax.plot([], [], [], '--', color = 'black', label="static")[0]
 ego_path.set_zorder(100)
 
 # modified vehicle path
-ego_path_mod = ax.plot([], [], [], '-', color = 'red', label="dynamic")[0]
-ego_path_mod.set_zorder(50)
+ego_path_mod = ax.plot([], [], [], color = 'red', label="dynamic", alpha=0.7)[0]
+ego_path_mod.set_zorder(200)
 
 # secondary graph
 ax2.bar(['original','modified'], [0,0])
@@ -88,7 +88,7 @@ ax2.bar(['original','modified'], [0,0])
 ax.set_xlabel(r'$x$ [m]')
 ax.set_ylabel(r'$y$ [m]')
 ax.set_zlabel(r'$U_{risk}$')
-ax.set_zticks([0])
+ax.set_zticks([0e4, 4e4, 8e4, 12e4])
 ax.legend()
 ax.set_title('Comparison p- vs pd Model')
 
@@ -104,14 +104,14 @@ def update(frame):
     pfm_mod.update(dt)
 
     # collect data for unmodified
-    x_plot.append(pfm.x)
-    y_plot.append(pfm.y)
-    z_plot.append(pfm.overall_risk_potential(pfm.x, pfm.y))
+    x_plot.append(pfm.ego.x)
+    y_plot.append(pfm.ego.y)
+    z_plot.append(pfm.overall_risk_potential(pfm.ego.x, pfm.ego.y))
 
     # collect data for modified
-    x_plot_mod.append(pfm_mod.x)
-    y_plot_mod.append(pfm_mod.y)
-    z_plot_mod.append(pfm.overall_risk_potential(pfm_mod.x, pfm_mod.y))
+    x_plot_mod.append(pfm_mod.ego.x)
+    y_plot_mod.append(pfm_mod.ego.y)
+    z_plot_mod.append(pfm.overall_risk_potential(pfm_mod.ego.x, pfm_mod.ego.y))
     
     # Update surface
     Z = pfm.overall_risk_potential(X, Y)
@@ -141,3 +141,4 @@ print('The animation will take', int(t_max/dt), 'frames')
 ani = animation.FuncAnimation(fig=fig, func=update, frames=int(t_max/dt), interval=dt*1000, repeat=True)
 
 plt.show()
+
