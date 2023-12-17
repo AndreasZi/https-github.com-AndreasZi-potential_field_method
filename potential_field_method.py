@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp2d
 from scipy.integrate import cumtrapz
 from typing import List
+from copy import deepcopy
 
 
 # This module is the python implementation of the artificial potential field method for autonomous driving
@@ -19,34 +20,38 @@ from typing import List
 
 class VehicleModel:
     """this is a simplified vehicle dynamics model, to showcase the functionality of the module"""
-    x = None
-    y = None
+    x = 0.0
+    y = 0.0
 
-    yaw = None
-    yaw_rate = None
+    yaw = 0.0
+    yaw_rate = 0.0
         
-    v = None
-    a = None
+    v = 0.0
+    a = 0.0
 
     # some default values for the vehicle sizes
     length = 5
     width = 2
 
 
-    def set_position(self, x, y, yaw=0.0, v=0.0):
+    def set_position(self, x, y, yaw=None, v=None, yaw_rate=None, a=None):
         self.x = x
         self.y = y
-        self.yaw = yaw
-        self.v = v
 
+        if yaw is not None:
+            self.yaw = yaw
 
-    def update_position(self, time):
-        """move the obstacle on a straigth path based on its yaw angle and speed"""
-        self.x += self.v*time*np.cos(self.yaw)
-        self.y += self.v*time*np.sin(self.yaw)
+        if yaw_rate is not None:
+            self.yaw_rate = yaw_rate
 
+        if v is not None:
+            self.v = v
 
-    def predict_position(self, yaw_rate_candidate, time):
+        if a is not None:
+            self.a = a
+
+    
+    def predict_position(self, yaw_rate_candidate, time, set_position = False):
         """predict the points on a trajctory for a fixed yaw rate for a set number of moments in time"""
 
         if type(time) is float:
@@ -54,11 +59,28 @@ class VehicleModel:
             time = np.array([0, time])
 
         #calculate the argument of the trigonometric functions first
-        arg = self.yaw+yaw_rate_candidate*time
-        return np.array([cumtrapz(self.v*time[1]*np.cos(arg)), cumtrapz(self.v*time[1]*np.sin(arg))]) + np.array([[self.x], [self.y]])
-    
-
+        angle = self.yaw + yaw_rate_candidate*time
+        speed = self.v + self.a*time
         
+        # then integrate the position
+        x = cumtrapz(speed*time[1]*np.cos(angle)) + self.x
+        y = cumtrapz(speed*time[1]*np.sin(angle)) + self.y
+
+        if set_position:
+            # update the vehicle with the most recent values
+            self.yaw = angle[-1]
+            self.v = speed[-1]
+            self.x = x[-1]
+            self.y = y[-1]
+
+        return np.array([x,y])
+
+    def update_position(self, time):
+        """This is a very simplified model to do trajectory modeling"""
+        # update position this is done on previous speed
+        self.predict_position(self.yaw_rate, time = time, set_position=True)
+
+    
     def plotoutline(self):
         pass
 
@@ -73,11 +95,9 @@ class HazardSource:
     variance_y = 3.05**2
 
     # center of the hazard
-    x = None
-    y = None
+    x = 0
+    y = 0
 
-
-        
     
     def get_risk_potential(self, X, Y):
         """
@@ -89,6 +109,9 @@ class HazardSource:
         Y = np.array(Y)
 
         
+        return self.risk_function(X-self.x, Y-self.y)
+    
+    def risk_function(self, X, Y):
         return self.weight*np.exp(-(X)**2/(self.variance_x)-(Y)**2/(self.variance_y))
 
     
@@ -120,57 +143,69 @@ class MovingObstacle(HazardSource, VehicleModel):
         # seperate the result into 3 cases
         # case 1 is behind the obstacle
         case1 = np.less_equal(X_local, X_obstacle_rear)
-        result[case1] = super().get_risk_potential(X_local-X_obstacle_rear, Y_local)[case1]
+        result[case1] = self.risk_function(X_local-X_obstacle_rear, Y_local)[case1]
 
         # case 2 is along the obstacle, in this section the function acts as a 1dim gaussean function
         case2 = np.logical_and(np.greater(X_local, X_obstacle_rear), np.less(X_local, X_obstacle_front))
-        result[case2] = super().get_risk_potential(np.zeros(X.shape), Y_local)[case2]
+        result[case2] = self.risk_function(np.zeros(X.shape), Y_local)[case2]
         
         # same as case 1 but uses the other end of the obstacle as median
         case3 = np.greater_equal(X_local, X_obstacle_front)
-        result[case3] = super().get_risk_potential(X_local-X_obstacle_front, Y_local)[case3]
+        result[case3] = self.risk_function(X_local-X_obstacle_front, Y_local)[case3]
 
         return result
     
 
+    def get_predictive_risk_potential(self, X, Y, search_time):
+        """return future risk potential along route"""
+
+        #create a copy of the current vehicle to not change the original position
+        copy = deepcopy(self)
+        result = np.zeros_like(search_time)
+
+        for i, (x,y) in enumerate(zip(X,Y)):
+            # update position on each step
+            copy.update_position(float(search_time[1]))
+            potential = copy.get_risk_potential(x,y)
+            result[i] = potential
+        return result
+
+        
 
 
-class Road(HazardSource):
+class Lane(HazardSource):
         """Hazard source for adapted for road hazard"""
-        def __init__(self) -> None:
+        def __init__(self, x_lane_center, y_lane_center) -> None:
 
             # set values to recomendation for road type
-            self.weight = 7.41e4
-            self.variance_x = 2.40**2
-            self.variance_y = 2.40**2
+            self.weight = -7.41e4
+            self.variance_x = 2**2#2.40**2
+            self.variance_y = 2**2#2.40**2
 
-            # this is where all of the lane centers are to be saved
-            self.lanes = []
+            # save the lane center
+            self.x = np.array(x_lane_center)
+            self.y = np.array(y_lane_center)
 
 
         def get_risk_potential(self, X, Y):
             """returns the repulsive field for all lanes set with the add_road_section function"""
 
             # convert to np array
-            X = np.array(X)
-            Y = np.array(Y)
+            X = np.array(X, dtype=np.float64)
+            Y = np.array(Y, dtype=np.float64)
 
             # initialize the risk potential at its max value to later subtract lane centers from
-            risk_potential = self.weight*np.ones(X.shape)
+            risk_potential = np.zeros_like(X, dtype=np.float64)
             
-            for lane in self.lanes:
-                # interpolate the lane to fit the shape of X
-                points_interp = np.interp(X, lane[0], lane[1])
+            # interpolate the lane to fit the shape of X
+            points_interp = np.interp(X, self.x, self.y)
 
-                #calculate risk potential along lane and subtract it from the result
-                risk_potential -= super().get_risk_potential(0, Y-points_interp)
+            #calculate risk potential along lane and subtract it from the result
+            risk_potential -= self.risk_function(0, Y-points_interp)
                 
             return risk_potential
         
-        def append_road_section(self, x_lane_center, y_lane_center):
-            """add lane to the road object"""
-
-            self.lanes.append(np.array([x_lane_center, y_lane_center]))
+        
 
 
 
@@ -186,11 +221,13 @@ class PotentialFieldMethod:
 
         # state of the ego vehicle
         self.ego = VehicleModel()
+        self.ego.set_position(0,0)
 
-        self.ego.x = None
-        self.ego.y = None
-        self.ego.yaw = None
-        self.ego.v = None
+        # containers for obstacles and road    
+        self._obstacles:List[MovingObstacle] = []
+        self._road:List[Lane] = []
+        self._target:HazardSource = None
+
         self.v_target = 50/3.6
         self.a_max = 3
 
@@ -200,10 +237,7 @@ class PotentialFieldMethod:
         self.performance_weights = np.ones(self.search_time.shape)
         self.q = 200 # weight for punishing aggressive steering
 
-        # containers for obstacles and road    
-        self._obstacles:List[MovingObstacle] = []
-        self._road = Road()
-        self._target = None
+        
 
         # save the results in these variables
         self.performance = 0
@@ -220,7 +254,7 @@ class PotentialFieldMethod:
         self.zone_values = np.zeros((2))
 
 
-    def overall_risk_potential(self, X, Y):
+    def get_risk_potential(self, X, Y):
         """calculates the total risk as a sum of the risk potential of all given osi objects"""
         result = np.zeros_like(X, dtype=np.float32)
 
@@ -229,23 +263,15 @@ class PotentialFieldMethod:
             result += ob.get_risk_potential(X, Y)
 
         # and the road itself
-        result += self._road.get_risk_potential(X, Y)
+        for lane in self._road:
+            #calculate risk potential along lane and subtract it from the result
+            result -= lane.get_risk_potential(X, Y)
 
         if self._target is not None:
             result += self._target.get_risk_potential(X, Y)
             
         return result
     
-    def set_target(self, x,y, weight=None):
-        target = HazardSource()
-        if weight == None:
-            target.weight *=-1
-        else:
-            target.weight = weight
-        target.x = x
-        target.y = y
-
-        self._target = target
 
     
 
@@ -259,7 +285,7 @@ class PotentialFieldMethod:
         trajectory = self.ego.predict_position(yaw_rate_candidate, self.search_time)
 
         # original would be np.sum, but np. average should allow for better comparability
-        J = np.average((self.overall_risk_potential(*trajectory) + self.q*yaw_rate_candidate**2)*self.performance_weights[1:])
+        J = np.average((self.get_risk_potential(*trajectory) + self.q*yaw_rate_candidate**2)*self.performance_weights[1:])
 
         return J
     
@@ -312,36 +338,14 @@ class PotentialFieldMethod:
 
     
     def append_lane(self, x_lane_center, y_center):
-        self._road.append_road_section(x_lane_center, y_center)
+        lane = Lane(x_lane_center, y_center)
+        self._road.append(lane)
 
     
-    def set_position(self, x, y, yaw=None, v=None):
-        self.ego.x = x
-        self.ego.y = y
-
-        if yaw is None and self.ego.yaw is None:
-            self.ego.yaw = 0.0
-        elif yaw is not None:
-            self.ego.yaw = yaw
-
-        if v is None and self.ego.v is None:
-            self.ego.v = 0.0
-        elif v is not None:
-            self.ego.v = v
+    
 
     
-    def update_position(self, time):
-        """This is a very simplified model to do trajectory modeling"""
-        # update position this is done on previous speed
-        pos = self.ego.predict_position(self.ideal_yaw_rate, time = time)
-        self.ego.x, self.ego.y = pos.flatten()
-        
-        if self.use_longitudal_control:
-            # update speed
-            a = self.find_ideal_acceleration(time)
-            self.ego.v += a*time
-        # update angle
-        self.ego.yaw += self.ideal_yaw_rate*time
+    
 
     
     def update(self, time):
@@ -349,33 +353,36 @@ class PotentialFieldMethod:
 
         self.dt = time
 
-        self.find_ideal_yawrate()
-        # self.find_ideal_acceleration()
-
-        for ob in self._obstacles:
+        
+        self.ego.yaw_rate = self.find_ideal_yawrate()
+        if self.use_longitudal_control:
+            # update speed
+            self.ego.a = self.find_ideal_acceleration(time)
+        
+        # update all vehicles
+        for ob in self._obstacles + [self.ego]:
             ob.update_position(time)
 
-        self.update_position(time)
 
 
     def front_zone(self):
         X = np.linspace(2, 5, 10) + self.ego.x
         Y = np.zeros_like(X) + self.ego.y
 
-        return self.overall_risk_potential(X,Y).mean()
+        return self.get_risk_potential(X,Y).mean()
 
 
     def center_zone(self):
         X = np.linspace(0,0,1) + self.ego.x
         Y = np.linspace(0,0,1) + self.ego.y
-        return self.overall_risk_potential(X,Y).mean()
+        return self.get_risk_potential(X,Y).mean()
 
 
     def rear_zone(self):
         X = np.linspace(-5, -2, 10) + self.ego.x
         Y = np.zeros_like(X) + self.ego.y
 
-        return self.overall_risk_potential(X,Y).mean()
+        return self.get_risk_potential(X,Y).mean()
 
 
     def find_ideal_acceleration(self, dt):
@@ -409,59 +416,45 @@ if __name__ == "__main__":
 
     # add obstacle and set its position
     obstacle = MovingObstacle()
-    obstacle.set_position(0, 0, 0.0*np.pi)
-    obstacle.length = 5
-    obstacle.width = 2
-    
+    obstacle.set_position(0,0,v=20,yaw_rate=1)
 
-    X = np.linspace(-30, 30, 15)
-    Y = np.linspace(-10, 10, 15)
+    
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    
+    X = np.linspace(-20, 20, 25)
+    Y = np.linspace(-10, 10, 25)
 
     X,Y = np.meshgrid(X,Y)
 
     # append obstacle to the pfm scanning
     pfm.append_obstacle(obstacle)
 
-    # obstacle acts like a reference
-    # obstacle.set_position(30, 0, 0.0*np.pi)
-
     #create straight lane
     x_lane = np.linspace(-10, 200, 100)
     y_lane = np.zeros(np.shape(x_lane))
     pfm.append_lane(x_lane, y_lane)
 
+    x,y = obstacle.predict_position(obstacle.yaw_rate, pfm.search_time)
+  
+    z = obstacle.get_predictive_risk_potential(x,y,pfm.search_time)
 
-    # set plot ranges
-    X = np.arange(-40, 40, 0.02)
-    Y = np.arange(-10, 10, 0.02) # np.arange(-7, 7, 0.1)
+    obstacle.update_position(pfm.search_time)
+    Z = obstacle.get_risk_potential(X,Y)
 
-    # save extend before creating meshgird
-    extent=[X[0],X[-1],Y[0],Y[-1]]
-    X,Y = np.meshgrid(X,Y)
+    print(x.shape)
+    print(y.shape)
+    print(z.shape)
 
 
-    # get hazard map
-    Z = pfm.overall_risk(X, Y)
-
-    # additional plot settings
     kwargs = {
-        'cmap': plt.cm.jet,
-        'vmin': 0,
-        'vmax': obstacle.weight,
-        'alpha': 1
-    }
-
-    # plot the actual data
-    fig = plt.figure()
-    ax = fig.add_subplot(projection='3d')
-
-    ax.plot_surface(X, Y, Z, **kwargs)
-
-    # add labels
-    ax.set_xlabel(r'$x$ [m]')
-    ax.set_ylabel(r'$y$ [m]')
-    ax.set_zlabel(r'$U_{risk}$')
-    ax.set_title("LUT model")
-
+    'cmap': plt.cm.jet, 
+    # 'vmin': 0,
+    # 'vmax': MovingObstacle.weight*1.2,
+    'alpha': 0.3,
+}
+    ax.plot_surface(X,Y,Z, **kwargs)
+    ax.scatter(x,y,z[1:], color='black')
     plt.show()
+
 

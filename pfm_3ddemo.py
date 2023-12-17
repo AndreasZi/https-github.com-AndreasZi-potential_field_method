@@ -4,13 +4,12 @@ import matplotlib.animation as animation
 import copy
 
 
-from potential_field_method import PotentialFieldMethod, MovingObstacle, Road
+from potential_field_method import PotentialFieldMethod, MovingObstacle, Lane
 
 
 
 # create pfm object
 pfm = PotentialFieldMethod()
-pfm.set_position(0,0, v=14) #set ego position (speed is in m/s)
 
 #create lane
 lane_x = np.linspace(0, 100, 50)
@@ -43,7 +42,7 @@ max_frames = int(t_max/dt)
 
 
 # setup of car states
-pfm.set_position(0,-1.75, 0, 14) #set ego position (speed is in m/s)
+pfm.ego.set_position(0,-1.75, 0, 14) #set ego position (speed is in m/s)
 ob1.set_position(35, -1.75, 0, v=7)
 pfm.d=2
 
@@ -67,13 +66,13 @@ Y = np.linspace(-7, 7, 25) # np.arange(-7, 7, 0.1)
 X,Y = np.meshgrid(X,Y)
 
 # get hazard map
-Z = pfm.overall_risk_potential(X, Y)
+Z = pfm.get_risk_potential(X, Y)
 
 # plot repulsive field as stationary background
 kwargs = {
     'cmap': plt.cm.jet, 
-    'vmin': 0,
-    'vmax': MovingObstacle.weight*1.2,
+    # 'vmin': 0,
+    # 'vmax': MovingObstacle.weight*1.2,
     'alpha': 0.7,
 }
 
@@ -96,12 +95,12 @@ def update(frame):
     # append to plot lists
     x_plot.append(pfm.ego.x)
     y_plot.append(pfm.ego.y)
-    z_plot.append(pfm.overall_risk_potential(pfm.ego.x, pfm.ego.y))
+    z_plot.append(pfm.get_risk_potential(pfm.ego.x, pfm.ego.y))
     # z_plot = pfm.overall_risk_potential(x_plot, y_plot)
     
     # Update surface
 
-    Z = pfm.overall_risk_potential(X, Y)
+    Z = pfm.get_risk_potential(X, Y)
 
     background.remove()
     background = ax.plot_surface(X,Y,Z, **kwargs)

@@ -4,7 +4,7 @@ import matplotlib.animation as animation
 import copy
 
 
-from potential_field_method import PotentialFieldMethod, MovingObstacle, Road
+from potential_field_method import PotentialFieldMethod, MovingObstacle, Lane
 
 
 # simulation time
@@ -27,7 +27,7 @@ pfm.append_obstacle(ob1)
 
 
 # setup of car states
-pfm.set_position(0,0, 0, 14) #set ego position (speed is in m/s)
+pfm.ego.set_position(0,0, 0, 14) #set ego position (speed is in m/s)
 ob1.set_position(50, -1.75, 0, v=4)
 
 # create second model using new calculation
@@ -62,13 +62,13 @@ Y = np.linspace(-4, 4, 25) # np.arange(-7, 7, 0.1)
 X,Y = np.meshgrid(X,Y)
 
 # get hazard map
-Z = pfm.overall_risk_potential(X, Y)
+Z = pfm.get_risk_potential(X, Y)
 
 # create setup for surface plot
 kwargs = {
     'cmap': plt.cm.jet, 
-    'vmin': 0,
-    'vmax': MovingObstacle.weight*1.2,
+    # 'vmin': 0,
+    # 'vmax': MovingObstacle.weight*1.2,
     'alpha': 0.7,
 }
 background = ax.plot_surface(X,Y,Z, **kwargs)
@@ -106,15 +106,15 @@ def update(frame):
     # collect data for unmodified
     x_plot.append(pfm.ego.x)
     y_plot.append(pfm.ego.y)
-    z_plot.append(pfm.overall_risk_potential(pfm.ego.x, pfm.ego.y))
+    z_plot.append(pfm.get_risk_potential(pfm.ego.x, pfm.ego.y))
 
     # collect data for modified
     x_plot_mod.append(pfm_mod.ego.x)
     y_plot_mod.append(pfm_mod.ego.y)
-    z_plot_mod.append(pfm.overall_risk_potential(pfm_mod.ego.x, pfm_mod.ego.y))
+    z_plot_mod.append(pfm.get_risk_potential(pfm_mod.ego.x, pfm_mod.ego.y))
     
     # Update surface
-    Z = pfm.overall_risk_potential(X, Y)
+    Z = pfm.get_risk_potential(X, Y)
     background.remove()
     background = ax.plot_surface(X,Y,Z, **kwargs)
 
