@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.patches import Rectangle
 
-from scipy.interpolate import interp2d
 from scipy.integrate import cumtrapz
 from typing import List
 from copy import deepcopy
@@ -56,9 +55,9 @@ class VehicleModel:
     
     def predict_position(self, yaw_rate_candidate, time, set_position = False):
         """predict the points on a trajctory for a fixed yaw rate for a set number of moments in time"""
-        if type(time) is float or type(time) is np.float64:
+        if type(time) is not np.ndarray:
             # if one singular timestep is given, change to minimal np array
-            time = np.array([0, time])
+            time = np.array([0, time], dtype=np.float64)
 
         #calculate the argument of the trigonometric functions first
         angle = self.yaw + yaw_rate_candidate*time
@@ -237,15 +236,13 @@ class PotentialFieldMethod:
         self._road:List[Lane] = []
         self._target:HazardSource = None
 
-        self.v_target = 50/3.6
-        self.a_max = 3
 
         # parameters that define the driving behaviour
         self.yaw_rate_candidates = np.linspace(-0.5,0.5,35)
         self.search_time = np.linspace(0,1,18)
         self.performance_weights = np.ones(self.search_time.shape)
         self.q = 200 # weight for punishing aggressive steering
-
+        
         
 
         # save the results in these variables
@@ -255,16 +252,29 @@ class PotentialFieldMethod:
         self.ideal_acceleration = None
 
         # additional calculation values
-        self.use_dynamic_model = False
-        self.use_longitudal_control = False
-        self.use_predictive_risk = False
         self.dt = 0
+
+        # longitudal control 
+        self.use_longitudal_control = False
+        self.v_target = 50/3.6
+        self.a_max = 2
         self.p = 0
         self.d = 1
         self.zone_values = np.zeros((2))
 
+        # use risk potential correleting to search time
+        self.use_predictive_risk = False
 
-    def get_risk_potential(self, X, Y, predicive = False):
+        # interpolation of previous get_risk_protential for pd control
+        self.use_global_pd = False
+        self.d_global = 1
+
+        # difference of performance index for pd control
+        self.use_local_pd = False
+        self.d_local = 1
+
+
+    def get_risk_potential(self, X, Y, previous=False, predicive=False):
         """calculates the total risk as a sum of the risk potential of all given osi objects"""
         result = np.zeros_like(X, dtype=np.float32)
 
@@ -272,6 +282,11 @@ class PotentialFieldMethod:
         for ob in self._obstacles:
             if predicive:
                 result += ob.get_predictive_risk_potential(X, Y, self.search_time)
+            elif previous:
+                # do one second ago, so it doesnt have to be divided by dt
+                ob_copy = deepcopy(ob)
+                ob_copy.update_position(-1)
+                result += ob_copy.get_risk_potential(X, Y)
             else:
                 result += ob.get_risk_potential(X, Y)
 
@@ -282,6 +297,13 @@ class PotentialFieldMethod:
 
         if self._target is not None:
             result += self._target.get_risk_potential(X, Y)
+
+
+        # using difference for pd control
+        if self.use_global_pd and not previous:
+            previous = self.get_risk_potential(X,Y,previous=True)
+            difference = result - previous
+            result += difference*self.d_global
             
         return result
     
@@ -309,14 +331,14 @@ class PotentialFieldMethod:
         #evaluate performance for all yaw rate candidates
         performance = np.array([(self.performance_index(yaw_rate), yaw_rate) for yaw_rate in self.yaw_rate_candidates])
 
-        if self.use_dynamic_model:
+        if self.use_local_pd:
             # calculate the difference in performance for each yaw rate candidate
             dynamic_performance = (performance - self.performance)
             # carry over old value to the next step
             self.performance = performance.copy()
 
             # sum of new and old performance
-            performance[:,0] += self.d*dynamic_performance[:,0]
+            performance[:,0] += self.d_local*dynamic_performance[:,0]
 
             # vizualize_performance=True
         
@@ -366,7 +388,6 @@ class PotentialFieldMethod:
         """update ego position and obstacle positions at once"""
 
         self.dt = time
-
         
         self.ego.yaw_rate = self.find_ideal_yawrate()
         if self.use_longitudal_control:
@@ -376,6 +397,8 @@ class PotentialFieldMethod:
         # update all vehicles
         for ob in self._obstacles + [self.ego]:
             ob.update_position(time)
+
+
 
 
 
@@ -430,8 +453,8 @@ if __name__ == "__main__":
     }
 
     # simulation time
-    dt = 0.2 # time resolution
-    t_max = 5 # end time
+    dt = 0.1 # time resolution
+    t_max = 10 # end time
     time = np.arange(0,t_max,dt)
 
     pfm = PotentialFieldMethod()
@@ -444,101 +467,69 @@ if __name__ == "__main__":
     lane_x = np.linspace(0, 100, 50)
     lane_y = np.zeros_like(lane_x)
     pfm.append_lane(lane_x, lane_y)
-    
+        
     #second lane with less weight
     lane_y = np.zeros_like(lane_x) - 3.5
     pfm.append_lane(lane_x, lane_y, weight_factor = 0.8)
 
     # set position of cars
-    pfm.ego.set_position(0,-3.5, v= 14, yaw = 0.0)
-    obstacle.set_position(0, 0, v=7)
+    pfm.ego.set_position(0,-3.5, v= 100/3.6, yaw = 0.0)
+    obstacle.set_position(35, 0, v=90/3.6)
 
-    # add moving obstacle as target 15 m in front of first car
-    target = deepcopy(obstacle)
-    target.weight*= -0.5
-    target.x += 15
-    pfm.append_obstacle(target)
-
-    #create iterations for ideal and predictive
     pfm1 = deepcopy(pfm)
-    pfm1.use_predictive_risk = True
-    pfm2 = deepcopy(pfm)
-    pfm2.use_dynamic_model = True
-    pfm2.d = 2
-
-
-    # empty list to keep track of results
-    x_plots = [[],[],[]]
-    y_plots = [[],[],[]]
+    pfm1.use_global_pd = True
+    pfm1.d_global = 2
 
 
     """animation"""
-    fig, ax = plt.subplots()
+    # plot the actual data
+    fig, axes = plt.subplots(2,1)
+
 
     # set plot ranges
-    X = np.linspace(-0, 300, 100)
-    Y = np.linspace(-8, 4.5, 100)
-    extent = [X[0], X[-1], Y[0], Y[-1]]
+    X = np.linspace(0, 250, 30)
+    Y = np.linspace(-7, 7, 30) # np.arange(-7, 7, 0.1)
+    extent=[X[0],X[-1],Y[0],Y[-1]]
     X,Y = np.meshgrid(X,Y)
 
     # get hazard map
     Z = pfm.get_risk_potential(X, Y)
 
-    # plot repulsive field as background
-    background  = ax.contourf(X,Y,Z, **kwargs_contourf)
 
-    # add animated plot elements  
-    ego_path0 = ax.plot([], [], '--', color = 'white', label = "regular")[0]
-    ego_path1 = ax.plot([], [], '-', color = 'black', label="ground truth")[0]
-    ego_path2 = ax.plot([], [], '.', color = 'grey', label="pd controller")[0]
-
-    timestamp = ax.text(1,6,s=f"{0.0:.1f}", fontfamily='monospace', fontsize='large')
+    backgrounds = [ax.contourf(X,Y,Z, **kwargs_contourf) for ax in axes]
     
-
-    def update(frame):
-        # prediction step
-        yr = pfm.find_ideal_yawrate()
-        tr = pfm.ego.predict_position(yr, pfm.search_time)
+    # obstacle outline
+    car_viz  = [ax.add_patch(obstacle.plotoutline()) for ax in axes]
 
 
+    def update(frame):    
 
-        # get the background data
-        Z = pfm.get_risk_potential(X, Y)
-
-        # append to plot lists
-        x_plots[0].append(pfm.ego.x)
-        y_plots[0].append(pfm.ego.y)
-        x_plots[1].append(pfm1.ego.x)
-        y_plots[1].append(pfm1.ego.y)
-        x_plots[2].append(pfm2.ego.x)
-        y_plots[2].append(pfm2.ego.y)
-
-        # update plots
-        global background
-        background.remove() # contourf doesnt support setdata
-        background = ax.contourf(X,Y,Z, **kwargs_contourf)
-        
-        ego_path0.set_data(x_plots[0], y_plots[0])
-        ego_path1.set_data(x_plots[1], y_plots[1])
-        ego_path2.set_data(x_plots[2], y_plots[2])
-
-        timestamp.set_text(f"t: {frame*dt:.1f}")
-
-        # update simulation
+        #update simulation
         pfm.update(dt)
         pfm1.update(dt)
-        pfm2.update(dt)
-        
 
 
-    ax.set_title("Artificial Potential Field Method")
-    ax.set_xlabel(r"$x$ [m]")
-    ax.set_ylabel(r"$y$ [m]")
+        Z1 = pfm.get_risk_potential(X, Y)
+        Z2 = pfm1.get_risk_potential(X, Y)
 
-    ax.legend()
+        #update upper image
+        backgrounds[0].remove()
+        backgrounds[0] = axes[0].contourf(X,Y,Z1, **kwargs_contourf)
+
+        backgrounds[1].remove()
+        backgrounds[1] = axes[1].contourf(X,Y,Z2, **kwargs_contourf)
+
+        # update car rectangles
+        for i, ax in enumerate(axes):
+            car_viz[i].remove()
+            car_viz[i] = ax.add_patch(obstacle.plotoutline(alpha=0.5))
+
+    fig.set_tight_layout(True)
+    axes[0].set_title('static risk potential')
+    axes[1].set_title(f'global pd risk potential (d={pfm1.d_global})')
 
     #create animation
-    ani = animation.FuncAnimation(fig=fig, func=update, frames=int(t_max/dt), interval=dt*1000)
+    ani = animation.FuncAnimation(fig=fig, func=update, frames=int(t_max/dt), interval=dt*1000, )
 
     plt.show()
 
