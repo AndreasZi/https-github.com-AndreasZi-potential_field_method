@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import matplotlib.animation as animation
+from matplotlib.patches import Rectangle
 
 from scipy.interpolate import interp2d
 from scipy.integrate import cumtrapz
@@ -31,9 +32,9 @@ class VehicleModel:
     v = 0.0
     a = 0.0
 
-    # some default values for the vehicle sizes
-    length = 5
-    width = 2
+    # some default values for the vehicle sizes (bmw i530)
+    length = 4.91
+    width = 1.86
 
 
     def set_position(self, x, y, yaw=None, v=None, yaw_rate=None, a=None):
@@ -81,9 +82,17 @@ class VehicleModel:
         self.predict_position(self.yaw_rate, time = time, set_position=True)
 
     
-    def plotoutline(self):
-        pass
+    def plotoutline(self, color='black', alpha=0.2):
+        """add the outline of the vehicle to an axis"""
+        x_left = self.x -self.length/2
+        y_bottom = self.y -self.width/2
+        patch = Rectangle((x_left,y_bottom), self.length, self.width, rotation_point='center')
+        patch.set_angle(self.yaw*180/np.pi)
+        patch.set_color(color)
+        patch.set_alpha(alpha)
 
+        return patch
+    
 
 
 
@@ -484,12 +493,14 @@ if __name__ == "__main__":
     ego_path2 = ax.plot([], [], '.', color = 'grey', label="pd controller")[0]
 
     timestamp = ax.text(1,6,s=f"{0.0:.1f}", fontfamily='monospace', fontsize='large')
-
+    
 
     def update(frame):
         # prediction step
         yr = pfm.find_ideal_yawrate()
         tr = pfm.ego.predict_position(yr, pfm.search_time)
+
+
 
         # get the background data
         Z = pfm.get_risk_potential(X, Y)
@@ -517,6 +528,7 @@ if __name__ == "__main__":
         pfm.update(dt)
         pfm1.update(dt)
         pfm2.update(dt)
+        
 
 
     ax.set_title("Artificial Potential Field Method")
