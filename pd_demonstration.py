@@ -28,12 +28,12 @@ pfm.append_obstacle(ob1)
 
 # setup of car states
 pfm.ego.set_position(0,0, 0, 14) #set ego position (speed is in m/s)
-ob1.set_position(50, -1.75, 0, v=4)
+ob1.set_position(50, -1.75, 0, v=7)
 
 # create second model using new calculation
 pfm_mod = copy.deepcopy(pfm)
-pfm_mod.use_dynamic_model = True
-pfm_mod.d=10
+pfm_mod.use_global_pd = True
+pfm_mod.d_global=1
 
 # create third model using ideal calculation
 pfm_gt = copy.deepcopy(pfm)
