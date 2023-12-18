@@ -35,6 +35,10 @@ pfm_mod = copy.deepcopy(pfm)
 pfm_mod.use_dynamic_model = True
 pfm_mod.d=10
 
+# create third model using ideal calculation
+pfm_gt = copy.deepcopy(pfm)
+pfm_gt.use_predictive_risk = True
+
 # empty list to keep track of results
 x_plot = []
 y_plot = []
@@ -44,6 +48,9 @@ x_plot_mod = []
 y_plot_mod = []
 z_plot_mod = []
 
+x_plot_gt = []
+y_plot_gt = []
+z_plot_gt = []
 
 
 """animation"""
@@ -78,8 +85,12 @@ ego_path = ax.plot([], [], [], '--', color = 'black', label="static")[0]
 ego_path.set_zorder(100)
 
 # modified vehicle path
-ego_path_mod = ax.plot([], [], [], color = 'red', label="dynamic", alpha=0.7)[0]
+ego_path_mod = ax.plot([], [], [], color = 'darkred', label="dynamic", alpha=0.7)[0]
 ego_path_mod.set_zorder(200)
+
+# modified vehicle path
+ego_path_gt = ax.plot([], [], [], color = 'black', label="ground truth", alpha=0.7)[0]
+ego_path_gt.set_zorder(150)
 
 # secondary graph
 ax2.bar(['original','modified'], [0,0])
@@ -99,9 +110,6 @@ ax2.set_title('average risk potential at cars position')
 def update(frame):
     global background, z_plot
 
-    # update potential field
-    pfm.update(dt)
-    pfm_mod.update(dt)
 
     # collect data for unmodified
     x_plot.append(pfm.ego.x)
@@ -113,6 +121,11 @@ def update(frame):
     y_plot_mod.append(pfm_mod.ego.y)
     z_plot_mod.append(pfm.get_risk_potential(pfm_mod.ego.x, pfm_mod.ego.y))
     
+    # collect data for ideal
+    x_plot_gt.append(pfm_gt.ego.x)
+    y_plot_gt.append(pfm_gt.ego.y)
+    z_plot_gt.append(pfm.get_risk_potential(pfm_gt.ego.x, pfm_gt.ego.y))
+
     # Update surface
     Z = pfm.get_risk_potential(X, Y)
     background.remove()
@@ -126,9 +139,21 @@ def update(frame):
     ego_path_mod.set_data(np.array(x_plot_mod), np.array(y_plot_mod))
     ego_path_mod.set_3d_properties(np.array(z_plot_mod))
     
+    # Update ideal ego path
+    ego_path_gt.set_data(np.array(x_plot_gt), np.array(y_plot_gt))
+    ego_path_gt.set_3d_properties(np.array(z_plot_gt))
+    
     # update bar plot
     ax2.clear()
     ax2.bar(['p','pd'],[np.sum(z_plot),np.sum(z_plot_mod)])
+
+
+
+    
+    # update potential field
+    pfm.update(dt)
+    pfm_mod.update(dt)
+    pfm_gt.update(dt)
 
     # manually stop the animation
     if frame >= max_frames-1:
