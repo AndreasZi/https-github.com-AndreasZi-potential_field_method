@@ -5,7 +5,7 @@ import matplotlib.animation as animation
 from matplotlib.patches import Rectangle
 
 from scipy.integrate import cumtrapz
-from typing import List
+from typing import List, Literal
 from copy import deepcopy
 
 
@@ -80,6 +80,9 @@ class VehicleModel:
         # update position this is done on previous speed
         self.predict_position(self.yaw_rate, time = time, set_position=True)
 
+    def distance_to_car(self, vehicle):
+        return np.linalg.norm([self.x - vehicle.x, self.y - vehicle.y])
+
     def get_radius(self):
         """return the radius of the current trajectory"""
         return self.v*self.yaw_rate
@@ -97,6 +100,7 @@ class VehicleModel:
             patch.set_animated(True)
 
         return patch
+    
     
 
 
@@ -189,7 +193,13 @@ class MovingObstacle(HazardSource, VehicleModel):
 
 class Lane(HazardSource):
         """Hazard source for adapted for road hazard"""
-        def __init__(self, x_lane_center, y_lane_center, lane_type='travel') -> None:
+
+        # lanes can be one of the following type
+        lane_roles = Literal["travel", "passing", "oncoming"]
+
+        def __init__(self, x_lane_center, y_lane_center, role:lane_roles = "travel") -> None:
+            # safe the lane function
+            self.role:Lane.lane_roles = role
 
             # set values to recomendation for road type
             self.weight = -7.41e4
@@ -200,9 +210,6 @@ class Lane(HazardSource):
             self.x = np.array(x_lane_center)
             self.y = np.array(y_lane_center)
 
-            # lane type, to reflect the function of the lane
-            # should be any of the three types: ['travel', 'overtake', 'oncomming']
-            self.lane_type = lane_type
 
         def get_risk_potential(self, X, Y):
             """returns the repulsive field for all lanes set with the add_road_section function"""
@@ -224,7 +231,58 @@ class Lane(HazardSource):
         
         
 
+class longitudal_control:
+    def __init__(self, ego_vehicle:VehicleModel) -> None:
+        self.ego_vehicle = ego_vehicle
 
+        # targets
+        self.lead_vehicle:VehicleModel = None
+        self.v_target = 100/3.6
+
+        # acelleration limits
+        self.a_max = 2
+        self.a_min = - 6
+
+        # speed vs distance threshhold
+        self.min_dist = 5
+        self.min_time = 0.5 #seconds behind leading car
+
+        # controll values
+        self.p = 1
+        self.i = 1
+
+
+    def update_acceleration(self):
+        # initialize speed difference to target speed
+
+        if self.lead_vehicle is not None and self.lead_vehicle.v < self.v_target:
+            # a leading car is present but it is faster than the target speed
+            v_dif = self.lead_vehicle.v - self.ego_vehicle.v
+
+            # calculate distance component
+            dist = self.ego_vehicle.distance_to_car(self.lead_vehicle)
+            if self.min_time*self.ego_vehicle.v < self.min_dist:
+                # min distance for control
+                d_dif = dist - self.min_dist
+            else:
+                # use min time for control
+                d_dif = dist - self.min_time*self.ego_vehicle.v
+
+        else:
+            # no leading car is present or it is slower get to target speed
+            v_dif = self.v_target - self.ego_vehicle.v
+
+            # influence of distance is zero
+            d_dif = 0
+            
+            
+        # control the acceleration based on speed and distance
+        a = v_dif*self.p + d_dif*self.i
+
+        # clip the result
+        self.ego_vehicle.a = np.clip(a, self.a_min, self.a_max)
+
+    
 
 
 
@@ -233,45 +291,43 @@ class PotentialFieldMethod:
     The potential field method is a path finding algorithm for autonomous vehicles<br>
     this is a blueprint, that provides the basic structure of the algorithm based on 
     """
+
+    # the potential field algorithm is used lane keeping, and overtake steering
+    possible_maneuvers = Literal['following', 'overtaking', 'unimpeded']
     
-    def __init__(self) -> None:
+    def __init__(self, initial_maneuver:possible_maneuvers = 'unimpeded') -> None:
+        # simulation time values
+        self.dt = None
+
+        # current maneuver
+        self.maneuver:PotentialFieldMethod.possible_maneuvers = initial_maneuver
 
         # state of the ego vehicle
         self.ego = VehicleModel()
-        self.ego.set_position(0,0)
+
+        # initiate adaptive cruise control
+        self.longitudal_control = longitudal_control(self.ego)
 
         # containers for obstacles and road    
+        self.hazard_sources:List[HazardSource] = []
         self._obstacles:List[MovingObstacle] = []
-        self._road:List[Lane] = []
-        self._target:HazardSource = None
 
+        self._road:List[Lane] = []
+        self.travel_lane:List[Lane] = []
 
         # parameters that define the driving behaviour
         self.yaw_rate_candidates = np.linspace(-0.5,0.5,35)
         self.search_time = np.linspace(0,1,18)
         self.performance_weights = np.ones(self.search_time.shape)
         self.q = 200 # weight for punishing aggressive steering
-        
-        
 
         # save the results in these variables
         self.performance = 0
         self.ideal_yaw_rate = None
         self.ideal_trajectory = None
-        self.ideal_acceleration = None
-
-        # additional calculation values
-        self.dt = 0
 
         # longitudal control 
         self.use_longitudal_control = False
-        self.v_target = 50/3.6
-        self.a_max = 2
-        self.a_min = - 6
-        self.p = 0
-        self.p_distance = 0
-        self.d = 0
-        self.zone_values = np.zeros((2))
 
         # use risk potential correleting to search time
         self.use_predictive_risk = False
@@ -306,8 +362,6 @@ class PotentialFieldMethod:
             #calculate risk potential along lane and subtract it from the result
             result -= lane.get_risk_potential(X, Y)
 
-        if self._target is not None:
-            result += self._target.get_risk_potential(X, Y)
 
 
         # using difference for pd control
@@ -375,24 +429,23 @@ class PotentialFieldMethod:
         return self.ideal_yaw_rate
     
 
-
     
     def append_obstacle(self, obstacle:MovingObstacle):
         if None in [obstacle.x, obstacle.y, obstacle.yaw]:
             print("position of obstacle is not defined")
         self._obstacles.append(obstacle)
 
+        self.hazard_sources.append(obstacle)
+
     
-    def append_lane(self, x_lane_center, y_center, weight_factor=1):
-        lane = Lane(x_lane_center, y_center)
+    def append_lane(self, lane:Lane, weight_factor=1):
         lane.weight*=weight_factor
         self._road.append(lane)
+        if lane.role == 'travel':
+            self.travel_lane.append(lane)
 
-    
-    
+        self.hazard_sources.append(lane)
 
-    
-    
 
     
     def update(self, time):
@@ -402,193 +455,142 @@ class PotentialFieldMethod:
         
         self.ego.yaw_rate = self.find_ideal_yawrate()
         if self.use_longitudal_control:
-            # update speed
-            self.ego.a = self.find_ideal_acceleration(time)
+            self.find_ideal_acceleration()
+            # print(self.ego.a)
         
         # update all vehicles
         for ob in self._obstacles + [self.ego]:
             ob.update_position(time)
 
-
-    def front_zone(self):
-        # t = np.linspace(0, 0.5, 2)
-        # x,y = self.ego.predict_position(self.ideal_yaw_rate,t)
-
-        # return self.get_risk_potential(x,y).mean()
-        X = np.linspace(0,2,3)*np.cos(self.ego.yaw) + self.ego.x
-        Y = np.linspace(0,2,3)*np.sin(self.ego.yaw) + self.ego.y
-
-        if self.use_predictive_risk:
-            return self.get_risk_potential(X,Y).mean()
-        else:
-            return self.get_risk_potential(X,Y).mean()
-
-
-    def center_zone(self):
-        X = np.linspace(0,0,1) + self.ego.x
-        Y = np.linspace(0,0,1) + self.ego.y
-        
-
-        if self.use_predictive_risk:
-            return self.get_risk_potential(X,Y).mean()
-        else:
-            return self.get_risk_potential(X,Y).mean()
+        # update lane weights
+        if self.maneuver == 'following':
+            for lane in self.travel_lane:
+                lane.weight = -Lane.weight*2
+                # print(lane.weight)
 
 
 
-    def rear_zone(self):
-        # t = np.linspace(0, -0.5, 2)
-        # x,y = self.ego.predict_position(self.ideal_yaw_rate,t)
-        # return self.get_risk_potential(x,y).mean()
-        X = np.linspace(0,-2,3)*np.cos(self.ego.yaw) + self.ego.x
-        Y = np.linspace(0,-2,3)*np.sin(self.ego.yaw) + self.ego.y
-        
-        
 
-        if self.use_predictive_risk:
-            return self.get_risk_potential(X,Y).mean()
-        else:
-            return self.get_risk_potential(X,Y).mean()
+    def find_ideal_acceleration(self):
+        self.longitudal_control.update_acceleration()
 
-
-
-    # def front_zone(self):
-    #     X = np.linspace(2, 5, 10) + self.ego.x
-    #     Y = np.zeros_like(X) + self.ego.y
-
-    #     return self.get_risk_potential(X,Y).mean()
-
-
-    # def center_zone(self):
-    #     X = np.linspace(0,0,1) + self.ego.x
-    #     Y = np.linspace(0,0,1) + self.ego.y
-    #     return self.get_risk_potential(X,Y).mean()
-
-
-    # def rear_zone(self):
-    #     X = np.linspace(-5, -2, 10) + self.ego.x
-    #     Y = np.zeros_like(X) + self.ego.y
-
-    #     return self.get_risk_potential(X,Y).mean()
-
-
-    def find_ideal_acceleration(self, dt):
-        """evaluate the potential field to find ideal yaw rate"""
-
-        #control loop factors
-
-        #calculate current zone values normalized by center zone
-        zone_values = np.array([self.front_zone(), self.rear_zone()]) /self.center_zone()
-
-        #get the difference from previous step
-        zone_val_dif = (zone_values - self.zone_values)/dt
-
-        #saved values for next step
-        self.zone_values = zone_values
-
-        distance_to_target = np.linalg.norm([self._target.x - self.ego.x, self._target.y - self.ego.y])
-        
-        speed_dif = self.v_target - self.ego.v
-
-        accelleration_estimate = self.p*(zone_values[0]-1) + self.d*zone_val_dif[0] + speed_dif #*distance_to_target
-        
-        if speed_dif <= 0:
-            # dont allow acceleration when faster than target speed
-            a = np.clip(accelleration_estimate, self.a_min, 0)
-        else:
-            a = np.clip(accelleration_estimate, self.a_min, self.a_max)
-
-        return a
-
-
+    def overtake(self):
+        self.maneuver = 'overtaking'
+        for lane in self.travel_lane:
+            lane.weight = -Lane.weight
+        self.longitudal_control.lead_vehicle = None
 
 
 if __name__ == "__main__":
 
-    kwargs_contourf = {
-    'cmap': plt.cm.jet,
+    
+    kwargs_imshow = {
+        'aspect': 1,
+        'origin': 'lower',
+        'cmap': plt.cm.jet,
+        'alpha': 0.8,
     }
 
     # simulation time
-    dt = 0.1 # time resolution
-    t_max = 10 # end time
+    dt = 0.2 # time resolution
+    t_max = 5 # end time
     time = np.arange(0,t_max,dt)
 
     pfm = PotentialFieldMethod()
+    # set position of car
+    pfm.ego.set_position(0,0, v= 100/3.6, yaw = 0.0)
+
+    # activate acc
+    pfm.use_longitudal_control=True
+    pfm.maneuver = 'following'
 
     # traffic participant
     obstacle = MovingObstacle()
+    obstacle.set_position(20, 0, v=80/3.6)
+    # obstacle.weight = 0
+    pfm.longitudal_control.lead_vehicle = obstacle
     pfm.append_obstacle(obstacle)
 
     # road setup with two lanes 7 3.5 meters appart
     lane_x = np.linspace(0, 100, 50)
     lane_y = np.zeros_like(lane_x)
-    pfm.append_lane(lane_x, lane_y)
+    lane1 = Lane(lane_x, lane_y, 'travel')
+    pfm.append_lane(lane1)
         
     #second lane with less weight
-    lane_y = np.zeros_like(lane_x) - 3.5
-    pfm.append_lane(lane_x, lane_y, weight_factor = 0.8)
+    lane2 = Lane(lane_x, lane_y - 3.5, 'passing')
+    pfm.append_lane(lane2)
+    
 
-    # set position of cars
-    pfm.ego.set_position(0,-3.5, v= 100/3.6, yaw = 0.0)
-    obstacle.set_position(35, 0, v=90/3.6)
 
-    pfm1 = deepcopy(pfm)
-    pfm1.use_global_pd = True
-    pfm1.d_global = 2
 
 
     """animation"""
-    # plot the actual data
-    fig, axes = plt.subplots(2,1)
-
+    fig, ax = plt.subplots()
 
     # set plot ranges
-    X = np.linspace(0, 250, 30)
-    Y = np.linspace(-7, 7, 30) # np.arange(-7, 7, 0.1)
-    extent=[X[0],X[-1],Y[0],Y[-1]]
-    X,Y = np.meshgrid(X,Y)
+    X_origin = np.linspace(-20, 20, 40)
+    Y_origin = np.linspace(-8, 8, 40)
+    x_center = obstacle.x
+    extent = [X_origin[0]+x_center, X_origin[-1]+x_center, Y_origin[0], Y_origin[-1]]
+    X,Y = np.meshgrid(X_origin + x_center, Y_origin)
 
     # get hazard map
     Z = pfm.get_risk_potential(X, Y)
 
+    # plot repulsive field as background
+    background  = ax.imshow(Z, extent=extent, **kwargs_imshow)
 
-    backgrounds = [ax.contourf(X,Y,Z, **kwargs_contourf) for ax in axes]
     
     # obstacle outline
-    car_viz  = [ax.add_patch(obstacle.plotoutline()) for ax in axes]
+    
+    models = [pfm.ego, obstacle]
+    names = ['ego', 'obstacle']
+    colors = ['black', 'grey']
+
+    car_viz  = [ax.add_patch(car.plotoutline()) for car in models]
+    text_params = {'va': 'center', 'family': 'monospace',
+                    'fontsize': '11'}
+    texts = [ax.text(car.x, car.y,name, color=color, **text_params) for car, name, color in zip(models, names, colors)]
 
 
-    def update(frame):    
+    def update(frame):
+        # prediction step
+        yr = pfm.find_ideal_yawrate()
+        tr = pfm.ego.predict_position(yr, pfm.search_time)
 
-        #update simulation
-        pfm.update(dt)
-        pfm1.update(dt)
+        # get the background data
+        x_center = obstacle.x
+        extent = [X_origin[0]+x_center, X_origin[-1]+x_center, Y_origin[0], Y_origin[-1]]
 
+        X,Y = np.meshgrid(X_origin + x_center, Y_origin)
+        Z = pfm.get_risk_potential(X, Y)
 
-        Z1 = pfm.get_risk_potential(X, Y)
-        Z2 = pfm1.get_risk_potential(X, Y)
-
-        #update upper image
-        backgrounds[0].remove()
-        backgrounds[0] = axes[0].contourf(X,Y,Z1, vmin = Z2.min(), vmax = Z2.max(), **kwargs_contourf)
-
-        backgrounds[1].remove()
-        backgrounds[1] = axes[1].contourf(X,Y,Z2, **kwargs_contourf)
-
+        # update plots
+        background.set_data(Z)
+        background.set_extent(extent)
 
         # update car rectangles
-        for i, ax in enumerate(axes):
+        for i, model in enumerate(models):
             car_viz[i].remove()
-            car_viz[i] = ax.add_patch(obstacle.plotoutline(alpha=0.5))
+            car_viz[i] = ax.add_patch(model.plotoutline(color = colors[i], alpha=0.5))
+            texts[i].set_x(model.x + 3.5)
+            texts[i].set_y(model.y)
 
-    fig.set_tight_layout(True)
-    axes[0].set_title('static risk potential')
-    axes[1].set_title(f'global pd risk potential (d={pfm1.d_global})')
+        if frame > 15:
+            pfm.overtake()
+        if frame > 30:
+            pfm.maneuver = 'following'
+
+        # update simulation
+        pfm.update(dt)
+
+
+    ax.set_title("Cutting in after driving alongside")
+    ax.set_xlabel(r"$x$ [m]")
+    ax.set_ylabel(r"$y$ [m]")
 
     #create animation
-    ani = animation.FuncAnimation(fig=fig, func=update, frames=int(t_max/dt), interval=dt*1000, )
+    ani = animation.FuncAnimation(fig=fig, func=update, frames=int(t_max/dt), interval=dt*1000)
 
     plt.show()
-
-
