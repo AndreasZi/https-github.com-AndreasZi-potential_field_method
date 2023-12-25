@@ -80,8 +80,11 @@ class VehicleModel:
         # update position this is done on previous speed
         self.predict_position(self.yaw_rate, time = time, set_position=True)
 
+    def get_radius(self):
+        """return the radius of the current trajectory"""
+        return self.v*self.yaw_rate
     
-    def plotoutline(self, color='black', alpha=0.2):
+    def plotoutline(self, color='black', alpha=0.2, animation=False):
         """add the outline of the vehicle to an axis"""
         x_left = self.x -self.length/2
         y_bottom = self.y -self.width/2
@@ -89,6 +92,9 @@ class VehicleModel:
         patch.set_angle(self.yaw*180/np.pi)
         patch.set_color(color)
         patch.set_alpha(alpha)
+
+        if animation:
+            patch.set_animated(True)
 
         return patch
     
@@ -173,9 +179,9 @@ class MovingObstacle(HazardSource, VehicleModel):
 
         for i, (x,y) in enumerate(zip(X,Y)):
             # update position on each step
-            copy.update_position(search_time[1])
             potential = copy.get_risk_potential(x,y)
             result[i] = potential
+            copy.update_position(search_time[1])
         return result
 
         
@@ -183,17 +189,20 @@ class MovingObstacle(HazardSource, VehicleModel):
 
 class Lane(HazardSource):
         """Hazard source for adapted for road hazard"""
-        def __init__(self, x_lane_center, y_lane_center) -> None:
+        def __init__(self, x_lane_center, y_lane_center, lane_type='travel') -> None:
 
             # set values to recomendation for road type
             self.weight = -7.41e4
-            self.variance_x = 2**2#2.40**2
-            self.variance_y = 2**2#2.40**2
+            self.variance_x = 2.40**2
+            self.variance_y = 2.40**2
 
             # save the lane center
             self.x = np.array(x_lane_center)
             self.y = np.array(y_lane_center)
 
+            # lane type, to reflect the function of the lane
+            # should be any of the three types: ['travel', 'overtake', 'oncomming']
+            self.lane_type = lane_type
 
         def get_risk_potential(self, X, Y):
             """returns the repulsive field for all lanes set with the add_road_section function"""
@@ -258,8 +267,10 @@ class PotentialFieldMethod:
         self.use_longitudal_control = False
         self.v_target = 50/3.6
         self.a_max = 2
+        self.a_min = - 6
         self.p = 0
-        self.d = 1
+        self.p_distance = 0
+        self.d = 0
         self.zone_values = np.zeros((2))
 
         # use risk potential correleting to search time
@@ -399,27 +410,66 @@ class PotentialFieldMethod:
             ob.update_position(time)
 
 
-
-
-
     def front_zone(self):
-        X = np.linspace(2, 5, 10) + self.ego.x
-        Y = np.zeros_like(X) + self.ego.y
+        # t = np.linspace(0, 0.5, 2)
+        # x,y = self.ego.predict_position(self.ideal_yaw_rate,t)
 
-        return self.get_risk_potential(X,Y).mean()
+        # return self.get_risk_potential(x,y).mean()
+        X = np.linspace(0,2,3)*np.cos(self.ego.yaw) + self.ego.x
+        Y = np.linspace(0,2,3)*np.sin(self.ego.yaw) + self.ego.y
+
+        if self.use_predictive_risk:
+            return self.get_risk_potential(X,Y).mean()
+        else:
+            return self.get_risk_potential(X,Y).mean()
 
 
     def center_zone(self):
         X = np.linspace(0,0,1) + self.ego.x
         Y = np.linspace(0,0,1) + self.ego.y
-        return self.get_risk_potential(X,Y).mean()
+        
+
+        if self.use_predictive_risk:
+            return self.get_risk_potential(X,Y).mean()
+        else:
+            return self.get_risk_potential(X,Y).mean()
+
 
 
     def rear_zone(self):
-        X = np.linspace(-5, -2, 10) + self.ego.x
-        Y = np.zeros_like(X) + self.ego.y
+        # t = np.linspace(0, -0.5, 2)
+        # x,y = self.ego.predict_position(self.ideal_yaw_rate,t)
+        # return self.get_risk_potential(x,y).mean()
+        X = np.linspace(0,-2,3)*np.cos(self.ego.yaw) + self.ego.x
+        Y = np.linspace(0,-2,3)*np.sin(self.ego.yaw) + self.ego.y
+        
+        
 
-        return self.get_risk_potential(X,Y).mean()
+        if self.use_predictive_risk:
+            return self.get_risk_potential(X,Y).mean()
+        else:
+            return self.get_risk_potential(X,Y).mean()
+
+
+
+    # def front_zone(self):
+    #     X = np.linspace(2, 5, 10) + self.ego.x
+    #     Y = np.zeros_like(X) + self.ego.y
+
+    #     return self.get_risk_potential(X,Y).mean()
+
+
+    # def center_zone(self):
+    #     X = np.linspace(0,0,1) + self.ego.x
+    #     Y = np.linspace(0,0,1) + self.ego.y
+    #     return self.get_risk_potential(X,Y).mean()
+
+
+    # def rear_zone(self):
+    #     X = np.linspace(-5, -2, 10) + self.ego.x
+    #     Y = np.zeros_like(X) + self.ego.y
+
+    #     return self.get_risk_potential(X,Y).mean()
 
 
     def find_ideal_acceleration(self, dt):
@@ -436,10 +486,17 @@ class PotentialFieldMethod:
         #saved values for next step
         self.zone_values = zone_values
 
+        distance_to_target = np.linalg.norm([self._target.x - self.ego.x, self._target.y - self.ego.y])
         
         speed_dif = self.v_target - self.ego.v
 
-        a = np.clip(self.p*(zone_values[0]-1) + self.d*zone_val_dif[0] + speed_dif, -self.a_max, self.a_max)
+        accelleration_estimate = self.p*(zone_values[0]-1) + self.d*zone_val_dif[0] + speed_dif #*distance_to_target
+        
+        if speed_dif <= 0:
+            # dont allow acceleration when faster than target speed
+            a = np.clip(accelleration_estimate, self.a_min, 0)
+        else:
+            a = np.clip(accelleration_estimate, self.a_min, self.a_max)
 
         return a
 
@@ -514,10 +571,11 @@ if __name__ == "__main__":
 
         #update upper image
         backgrounds[0].remove()
-        backgrounds[0] = axes[0].contourf(X,Y,Z1, **kwargs_contourf)
+        backgrounds[0] = axes[0].contourf(X,Y,Z1, vmin = Z2.min(), vmax = Z2.max(), **kwargs_contourf)
 
         backgrounds[1].remove()
         backgrounds[1] = axes[1].contourf(X,Y,Z2, **kwargs_contourf)
+
 
         # update car rectangles
         for i, ax in enumerate(axes):
@@ -532,6 +590,5 @@ if __name__ == "__main__":
     ani = animation.FuncAnimation(fig=fig, func=update, frames=int(t_max/dt), interval=dt*1000, )
 
     plt.show()
-
 
 

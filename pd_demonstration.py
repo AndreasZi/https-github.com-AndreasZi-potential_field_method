@@ -85,7 +85,7 @@ ego_path = ax.plot([], [], [], '--', color = 'black', label="static")[0]
 ego_path.set_zorder(100)
 
 # modified vehicle path
-ego_path_mod = ax.plot([], [], [], color = 'darkred', label="dynamic", alpha=0.7)[0]
+ego_path_mod = ax.plot([], [], [], color = 'darkred', label="global", alpha=0.7)[0]
 ego_path_mod.set_zorder(200)
 
 # modified vehicle path
