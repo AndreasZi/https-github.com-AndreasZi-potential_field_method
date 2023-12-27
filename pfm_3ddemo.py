@@ -15,23 +15,15 @@ pfm = PotentialFieldMethod()
 lane_x = np.linspace(0, 100, 50)
 # lane_y = 0.005*lane_x**2
 lane_y = np.zeros_like(lane_x)
-pfm.append_lane(lane_x, lane_y)
+lane = Lane(lane_x, lane_y, 'travel')
+pfm.append_lane(lane)
 
-# lane_x = np.linspace(0, 100, 50)
-# # lane_y = 0.005*lane_x**2
-# lane_y = np.zeros_like(lane_x) - 3.5
-# pfm.append_lane(lane_x, lane_y)
+lane = Lane(lane_x, lane_y - 3.5, 'passing')
+pfm.append_lane(lane)
 
 #create obstacle
 ob1 = MovingObstacle()
-# ob1.set_position(40, 5.0, yaw=np.pi/6)
-ob1.set_position(35, -3.5)
 pfm.append_obstacle(ob1)
-
-# ob2 = MovingObstacle()
-# # ob1.set_position(40, 5.0, yaw=np.pi/6)
-# ob2.set_position(35 + 80, -3.5)
-# pfm.append_obstacle(ob2)
 
 
 
@@ -42,9 +34,8 @@ max_frames = int(t_max/dt)
 
 
 # setup of car states
-pfm.ego.set_position(0,-1.75, 0, 14) #set ego position (speed is in m/s)
-ob1.set_position(35, -1.75, 0, v=7)
-pfm.d=2
+pfm.ego.set_position(0, 0, 0, 14) #set ego position (speed is in m/s)
+ob1.set_position(35, 0, 0, v=7)
 
 
 # empty list to keep track of results
