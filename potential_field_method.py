@@ -199,12 +199,10 @@ class Lane(HazardSource):
         variance_x = 2.40**2
         variance_y = 2.40**2
         
-        # lanes can be one of the following type
-        lane_roles = Literal["travel", "passing", "oncoming"]
 
-        def __init__(self, x_lane_center, y_lane_center, role:lane_roles = "travel") -> None:
+        def __init__(self, x_lane_center, y_lane_center, role:Literal["travel", "passing", "oncoming"]) -> None:
             # safe the lane function
-            self.role:Lane.lane_roles = role
+            self.role: Literal["travel", "passing", "oncoming"] = role
 
             # save the lane center
             self.x = np.array(x_lane_center)
@@ -295,12 +293,12 @@ class PotentialFieldMethod:
     # the potential field algorithm is used lane keeping, and overtake steering
     possible_maneuvers = Literal['following', 'overtaking', 'unimpeded']
     
-    def __init__(self, initial_maneuver:possible_maneuvers = 'unimpeded') -> None:
+    def __init__(self) -> None:
         # simulation time values
         self.dt = None
 
         # current maneuver
-        self.maneuver:PotentialFieldMethod.possible_maneuvers = initial_maneuver
+        self.maneuver:Literal['following', 'overtaking', 'unimpeded'] = 'unimpeded'
 
         # state of the ego vehicle
         self.ego = VehicleModel()
