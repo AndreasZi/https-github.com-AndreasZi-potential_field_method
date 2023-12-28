@@ -548,7 +548,7 @@ if __name__ == "__main__":
 
     
     kwargs_imshow = {
-        'aspect': 3,
+        'aspect': 2,
         'origin': 'lower',
         'cmap': plt.cm.jet,
         'alpha': 0.8,
@@ -558,7 +558,7 @@ if __name__ == "__main__":
 
     # simulation time
     dt = 0.2 # time resolution
-    t_max = 50 # end time
+    t_max = 28 # end time
     time = np.arange(0,t_max,dt)
 
     pfm = PotentialFieldMethod()
@@ -581,16 +581,23 @@ if __name__ == "__main__":
     obstacle = MovingObstacle()
     obstacle.set_position(20, 0, v=80/3.6)
     pfm.append_obstacle(obstacle)
-    pfm.follow(obstacle)
 
     obstacle2 = MovingObstacle()
     obstacle2.set_position(80, 0, v=80/3.6)
     pfm.append_obstacle(obstacle2)
 
 
+    pfm_adjusted = deepcopy(pfm)
+    pfm_adjusted.lane_keeping_mode = 'lead vehicle'
+
+    
+    pfm.follow(obstacle)
+    pfm_adjusted.follow(pfm_adjusted.moving_obstacles[0])
+
+
 
     """animation"""
-    fig, ax = plt.subplots()
+    fig, axes = plt.subplots(2, 1)
 
     # set plot ranges
     X_origin = np.linspace(-20, 120, 40)
@@ -600,22 +607,26 @@ if __name__ == "__main__":
     X,Y = np.meshgrid(X_origin + x_center, Y_origin)
 
     # get hazard map
-    Z = pfm.get_risk_potential(X, Y)
+    Z = [pfm.get_risk_potential(X, Y), pfm_adjusted.get_risk_potential(X, Y)]
 
+    print(Z[1].shape)
     # plot repulsive field as background
-    background  = ax.imshow(Z, extent=extent, **kwargs_imshow)
+    backgrounds  = []
+    for i, ax in enumerate(axes):
+        backgrounds.append(ax.imshow(Z[i], extent=extent, **kwargs_imshow))
 
     
     # obstacle outline
     
-    models = [pfm.ego, obstacle, obstacle2]
+    models = [[pfm.ego, obstacle, obstacle2], [pfm_adjusted.ego, obstacle, obstacle2]]
     names = ['ego', 'obstacle 1', 'obstacle 2']
     colors = ['black', 'grey', 'blue']
 
-    car_viz  = [ax.add_patch(car.plotoutline()) for car in models]
-    text_params = {'va': 'center', 'family': 'monospace',
-                    'fontsize': '11'}
-    texts = [ax.text(car.x, car.y,name, color=color, **text_params) for car, name, color in zip(models, names, colors)]
+    car_viz  = [[axes[i].add_patch(car.plotoutline()) for car in models[i]] for i, ax in enumerate(axes)]
+    # text_params = {'va': 'center', 'family': 'monospace',
+    #                 'fontsize': '11'}
+    
+    # texts = [[ax.text(car.x, car.y,name, color=color, **text_params) for car, name, color in zip(models[ia], names, colors)] for ia, ax in enumerate(axes)]
 
 
     def update(frame):
@@ -628,32 +639,40 @@ if __name__ == "__main__":
         extent = [X_origin[0]+x_center, X_origin[-1]+x_center, Y_origin[0], Y_origin[-1]]
 
         X,Y = np.meshgrid(X_origin + x_center, Y_origin)
-        Z = pfm.get_risk_potential(X, Y)
+        Z = [pfm.get_risk_potential(X, Y), pfm_adjusted.get_risk_potential(X, Y)]
 
         # update plots
-        background.set_data(Z)
-        background.set_extent(extent)
+        for ia, ax in enumerate(axes):
+            backgrounds[ia].set_data(Z[ia])
+            backgrounds[ia].set_extent(extent)
 
-        # update car rectangles
-        for i, model in enumerate(models):
-            car_viz[i].remove()
-            car_viz[i] = ax.add_patch(model.plotoutline(color = colors[i], alpha=0.5))
-            texts[i].set_x(model.x + 3.5)
-            texts[i].set_y(model.y)
+            # update car rectangles
+            for i, model in enumerate(models[ia]):
+                car_viz[ia][i].remove()
+                car_viz[ia][i] = ax.add_patch(model.plotoutline(color = colors[i], alpha=0.5))
+                # texts[ia][i].set_x(model.x + 3.5)
+                # texts[ia][i].set_y(model.y)
 
         # print(frame)
         if frame == 30:
             pfm.overtake()
+            pfm_adjusted.overtake()
         if frame == 100:
             pfm.overtake()
+            pfm_adjusted.overtake()
 
         # update simulation
         pfm.update(dt)
+        pfm_adjusted.update(dt)
 
 
-    ax.set_title("Cutting in after driving alongside")
-    ax.set_xlabel(r"$x$ [m]")
-    ax.set_ylabel(r"$y$ [m]")
+    axes[0].set_title("adjusting lane weight")
+    
+    axes[1].set_title("adjusting lead car weight")
+
+    for ax in axes:
+        ax.set_xlabel(r"$x$ [m]")
+        ax.set_ylabel(r"$y$ [m]")
 
     #create animation
     ani = animation.FuncAnimation(fig=fig, func=update, frames=int(t_max/dt), interval=dt*1000)
