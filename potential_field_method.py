@@ -115,7 +115,6 @@ class HazardSource:
     # center of the hazard
     x = 0
     y = 0
-
     
     def get_risk_potential(self, X, Y):
         """
@@ -203,6 +202,8 @@ class Lane(HazardSource):
         def __init__(self, x_lane_center, y_lane_center, role:Literal["travel", "passing", "oncoming"]) -> None:
             # safe the lane function
             self.role: Literal["travel", "passing", "oncoming"] = role
+            if self.role == 'travel':
+                self.weight = 1.5*Lane.weight
 
             # save the lane center
             self.x = np.array(x_lane_center)
@@ -244,6 +245,7 @@ class acc_demo:
         # speed vs distance threshhold
         self.min_dist = 5
         self.min_time = 0.8 #seconds behind leading car
+        self.dist_threshhold = self.min_dist
 
         # controll values
         self.speed_factor = 1
@@ -261,10 +263,12 @@ class acc_demo:
             dist = self.ego_vehicle.distance_to_car(self.lead_vehicle)
             if self.min_time*self.ego_vehicle.v < self.min_dist:
                 # min distance for control
-                d_dif = dist - self.min_dist
+                self.dist_threshhold = self.min_dist
             else:
                 # use min time for control
-                d_dif = dist - self.min_time*self.ego_vehicle.v
+                self.dist_threshhold = self.min_time*self.ego_vehicle.v
+
+            d_dif = dist - self.dist_threshhold
 
         else:
             # no leading car is present or it is slower get to target speed
@@ -291,27 +295,28 @@ class PotentialFieldMethod:
     """
 
     # the potential field algorithm is used lane keeping, and overtake steering
-    possible_maneuvers = Literal['following', 'overtaking', 'unimpeded']
+    possible_maneuvers = Literal['follow', 'overtake', 'unimpeded']
     
     def __init__(self) -> None:
         # simulation time values
         self.dt = None
 
         # current maneuver
-        self.maneuver:Literal['following', 'overtaking', 'unimpeded'] = 'unimpeded'
+        self.maneuver:Literal['follow', 'overtake', 'unimpeded'] = None
 
         # state of the ego vehicle
         self.ego = VehicleModel()
 
         # initiate adaptive cruise control
-        self.longitudal_control = acc_demo(self.ego)
+        self.longitudal_control = acc_demo(self.ego)        
 
         # containers for obstacles and road    
         self.hazard_sources:List[HazardSource] = []
-        self._obstacles:List[MovingObstacle] = []
+        self.moving_obstacles:List[MovingObstacle] = []
 
         self.lanes:List[Lane] = []
         self.travel_lane:Lane = None
+        self.lane_keeping_mode:Literal['lane', 'lead vehicle'] = 'lane'
 
         # parameters that define the driving behaviour
         self.yaw_rate_candidates = np.linspace(-0.5,0.5,35)
@@ -416,7 +421,7 @@ class PotentialFieldMethod:
     def append_obstacle(self, obstacle:MovingObstacle):
         if None in [obstacle.x, obstacle.y, obstacle.yaw]:
             print("position of obstacle is not defined")
-        self._obstacles.append(obstacle)
+        self.moving_obstacles.append(obstacle)
 
         self.hazard_sources.append(obstacle)
 
@@ -441,23 +446,69 @@ class PotentialFieldMethod:
             self.longitudal_control.update_acceleration()
         
         # update all vehicles
-        for ob in self._obstacles + [self.ego]:
+        for ob in self.moving_obstacles + [self.ego]:
             ob.update_position(time)
+
+        self.check_maneuver()
+
+
+
+    def check_maneuver(self):
+        
+        # sort obstacles by distance in travel direction
+        vehicles = sorted(self.moving_obstacles + [self.ego], key= lambda ob: ob.x*np.cos(self.ego.yaw) + ob.y*np.sin(self.ego.yaw))
+        # this information will be used to decide on maneuver
+
+        # where is the ego car
+        i = vehicles.index(self.ego)
+
+        if self.maneuver == 'unimpeded':
+            if i != len(vehicles) - 1:
+                # the ego car is not yet the last car
+                self.follow(vehicles[i+1])
+
+        # check if overtake is ongoing
+        if self.maneuver == 'overtake':
+            if i == 0:
+                # no car has been overtaken, keep waiting
+                pass
+            elif i == len(vehicles)-1:
+                # ego car has overtaken all cars
+                distance_to_following_car = self.ego.distance_to_car(vehicles[i-1])
+
+                if distance_to_following_car > self.longitudal_control.min_dist:
+                    # enough distance has been established, end overtake
+                    self.maneuver = 'unimpeded'
+            else:
+                # ego car is neither first nor last car
+                distance_to_following_car = self.ego.distance_to_car(vehicles[i-1])
+                distance_to_leading_car = self.ego.distance_to_car(vehicles[i+1])
+
+                if distance_to_following_car > self.longitudal_control.min_dist:
+                    if distance_to_leading_car > self.longitudal_control.dist_threshhold:
+                        # safe distance to both cars is established, end overtake
+                        self.follow(vehicles[i+1])
+
+
+
 
         
 
 
     def overtake(self):
         """stop following and initiate overtake"""
-        if self.maneuver != 'following':
+        if self.maneuver != 'follow':
             print("the car cant currently overtake, as there is no lead car")
             
         else:   
             # change maneuver identifier
-            self.maneuver = 'overtaking'
+            self.maneuver = 'overtake'
 
             # adjust weight lanes
             self.travel_lane.weight = 1.5*Lane.weight
+
+            # revert weight of lead car
+            self.longitudal_control.lead_vehicle.weight = MovingObstacle.weight
             
             # remove lead car from longitudal control
             self.longitudal_control.lead_vehicle = None
@@ -467,16 +518,30 @@ class PotentialFieldMethod:
 
     def follow(self, vehicle:VehicleModel):
         # change maneuver identifier
-        self.maneuver = 'following'
+        self.maneuver = 'follow'
 
-        # adjust travel lane to be dominant
-        self.travel_lane.weight = 2.5*Lane.weight
+        if self.lane_keeping_mode == 'lane':
+            # adjust travel lane to be dominant
+            self.travel_lane.weight = 2.5*Lane.weight
+        else: 
+            # adjust weight of lead car to be attracting
+            vehicle.weight = - MovingObstacle.weight
             
         # add new lead car
         self.longitudal_control.lead_vehicle = vehicle
 
         # print([lane.weight for lane in self._road + self.travel_lane])
-        
+
+    
+    def unimpeded(self):
+        # change maneuver identifier
+        self.maneuver = 'unimpeded'
+
+        # adjust travel lane to be dominant
+        self.travel_lane.weight = 2.5*Lane.weight
+
+
+
 
 
 if __name__ == "__main__":
@@ -579,8 +644,6 @@ if __name__ == "__main__":
         # print(frame)
         if frame == 30:
             pfm.overtake()
-        if frame == 70:
-            pfm.follow(obstacle2)
         if frame == 100:
             pfm.overtake()
 
