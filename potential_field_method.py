@@ -499,8 +499,9 @@ class PotentialFieldMethod:
         """stop following and initiate overtake"""
         if self.maneuver != 'follow':
             print("the car cant currently overtake, as there is no lead car")
-            
-        else:   
+        else:
+            print("overtake")
+
             # change maneuver identifier
             self.maneuver = 'overtake'
 
@@ -517,6 +518,7 @@ class PotentialFieldMethod:
 
 
     def follow(self, vehicle:VehicleModel):
+        print("follow")
         # change maneuver identifier
         self.maneuver = 'follow'
 
@@ -525,7 +527,7 @@ class PotentialFieldMethod:
             self.travel_lane.weight = 2.5*Lane.weight
         else: 
             # adjust weight of lead car to be attracting
-            vehicle.weight = - MovingObstacle.weight
+            vehicle.weight = - MovingObstacle.weight/4
             
         # add new lead car
         self.longitudal_control.lead_vehicle = vehicle
@@ -534,6 +536,7 @@ class PotentialFieldMethod:
 
     
     def unimpeded(self):
+        print("unimpeded")
         # change maneuver identifier
         self.maneuver = 'unimpeded'
 
@@ -583,7 +586,7 @@ if __name__ == "__main__":
     pfm.append_obstacle(obstacle)
 
     obstacle2 = MovingObstacle()
-    obstacle2.set_position(80, 0, v=80/3.6)
+    obstacle2.set_position(60, 0, v=80/3.6)
     pfm.append_obstacle(obstacle2)
 
 
