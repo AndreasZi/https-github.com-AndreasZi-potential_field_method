@@ -37,6 +37,7 @@ class VehicleModel:
 
 
     def set_position(self, x, y, yaw=None, v=None, yaw_rate=None, a=None):
+        """define the state of the vehicle"""
         self.x = x
         self.y = y
 
@@ -74,18 +75,43 @@ class VehicleModel:
             self.x = x[-1]
             self.y = y[-1]
         return np.array([x,y])
+    
 
     def update_position(self, time):
         """This is a very simplified model to do trajectory modeling"""
         # update position this is done on previous speed
         self.predict_position(self.yaw_rate, time = time, set_position=True)
 
-    def distance_to_car(self, vehicle):
-        return np.linalg.norm([self.x - vehicle.x, self.y - vehicle.y])
+
+    def distance_to_car(self, vehicle, mode:Literal['center2center', 'edge2edge', 'shortest']='edge2edge'):
+        """compare distance to another car"""
+        if mode == 'center2center':
+            return np.linalg.norm([self.x - vehicle.x, self.y - vehicle.y])
+        elif mode == 'edge2edge':
+            dist = np.linalg.norm([self.x - vehicle.x, self.y - vehicle.y])
+            #create vector
+            relative_angle = np.arctan((vehicle.y - self.y)/(vehicle.x - self.x))
+
+            #subtract ego cars boundary distance
+            dist -= self.get_distance_to_boundary(self.yaw + relative_angle)
+
+            # subtract vehicle boundary
+            dist -= vehicle.get_distance_to_boundary(vehicle.yaw + relative_angle)
+            return dist
+    
+    def get_distance_to_boundary(self, angle):
+        """get the distance from center to the bounding box of the car"""
+        if self.length*np.tan(angle) < self.width:
+            # exiting on short sides
+            return abs(np.cos(angle)*self.length/2)
+        else: 
+            # exit on long sides
+            return abs(np.cos(angle)*self.width/2)
 
     def get_radius(self):
         """return the radius of the current trajectory"""
         return self.v*self.yaw_rate
+    
     
     def plotoutline(self, color='black', alpha=0.2, animation=False):
         """add the outline of the vehicle to an axis"""
@@ -129,6 +155,7 @@ class HazardSource:
         return self.risk_function(X-self.x, Y-self.y)
     
     def risk_function(self, X, Y):
+        """This is the mathematical base function that defines the potential field"""
         return self.weight*np.exp(-(X)**2/(self.variance_x)-(Y)**2/(self.variance_y))
 
     
@@ -174,7 +201,7 @@ class MovingObstacle(HazardSource, VehicleModel):
     
 
     def get_predictive_risk_potential(self, X, Y, search_time):
-        """return future risk potential along route"""
+        """return future risk potential with risk potential equivalent to the time traveled"""
 
         #create a copy of the current vehicle to not change the original position
         copy = deepcopy(self)
@@ -253,6 +280,7 @@ class acc_demo:
 
 
     def update_acceleration(self):
+        """update the ego vehicles acceleration based on the lead vehicle state"""
         # initialize speed difference to target speed
 
         if self.lead_vehicle is not None and self.lead_vehicle.v < self.v_target:
@@ -302,7 +330,7 @@ class PotentialFieldMethod:
         self.dt = None
 
         # current maneuver
-        self.maneuver:Literal['follow', 'overtake', 'unimpeded'] = None
+        self.maneuver:Literal['follow', 'overtake', 'unimpeded'] = 'unimpeded'
 
         # state of the ego vehicle
         self.ego = VehicleModel()
@@ -419,6 +447,7 @@ class PotentialFieldMethod:
 
     
     def append_obstacle(self, obstacle:MovingObstacle):
+        """add obstacle to the environment"""
         if None in [obstacle.x, obstacle.y, obstacle.yaw]:
             print("position of obstacle is not defined")
         self.moving_obstacles.append(obstacle)
@@ -427,6 +456,7 @@ class PotentialFieldMethod:
 
     
     def append_lane(self, lane:Lane, weight_factor=1):
+        """add lane to the environment"""
         lane.weight*=weight_factor
         self.lanes.append(lane)
         if lane.role == 'travel':
@@ -454,7 +484,7 @@ class PotentialFieldMethod:
 
 
     def check_maneuver(self):
-        
+        """this function updates the behavisour of the car and the potential field based on the current maneuver"""
         # sort obstacles by distance in travel direction
         vehicles = sorted(self.moving_obstacles + [self.ego], key= lambda ob: ob.x*np.cos(self.ego.yaw) + ob.y*np.sin(self.ego.yaw))
         # this information will be used to decide on maneuver
@@ -496,7 +526,7 @@ class PotentialFieldMethod:
 
 
     def overtake(self):
-        """stop following and initiate overtake"""
+        """initiate overtake, only works if car is currently following another car"""
         if self.maneuver != 'follow':
             print("the car cant currently overtake, as there is no lead car")
         else:
@@ -518,6 +548,7 @@ class PotentialFieldMethod:
 
 
     def follow(self, vehicle:VehicleModel):
+        """adjust distance and speed to specified vehicle"""
         print("follow")
         # change maneuver identifier
         self.maneuver = 'follow'
@@ -536,6 +567,7 @@ class PotentialFieldMethod:
 
     
     def unimpeded(self):
+        """stop following and drive at speed limit"""
         print("unimpeded")
         # change maneuver identifier
         self.maneuver = 'unimpeded'
@@ -586,7 +618,7 @@ if __name__ == "__main__":
     pfm.append_obstacle(obstacle)
 
     obstacle2 = MovingObstacle()
-    obstacle2.set_position(60, 0, v=80/3.6)
+    obstacle2.set_position(80, 0, v=80/3.6)
     pfm.append_obstacle(obstacle2)
 
 
