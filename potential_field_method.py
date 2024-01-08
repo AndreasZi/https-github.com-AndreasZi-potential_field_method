@@ -113,14 +113,15 @@ class VehicleModel:
         return self.v*self.yaw_rate
     
     
-    def plotoutline(self, color='black', alpha=0.2, animation=False):
+    def plotoutline(self, color='black', alpha=1, animation=False):
         """add the outline of the vehicle to an axis"""
         x_left = self.x -self.length/2
         y_bottom = self.y -self.width/2
         patch = Rectangle((x_left,y_bottom), self.length, self.width, rotation_point='center')
         patch.set_angle(self.yaw*180/np.pi)
-        patch.set_color(color)
+        patch.set_color('white')
         patch.set_alpha(alpha)
+        patch.set_edgecolor(color)
 
         if animation:
             patch.set_animated(True)
@@ -231,6 +232,10 @@ class Lane(HazardSource):
             self.role: Literal["travel", "passing", "oncoming"] = role
             if self.role == 'travel':
                 self.weight = 1.5*Lane.weight
+            elif self.role == 'passing':
+                self.variance_x = 0.5*Lane.variance_x
+                self.variance_y = 0.5*Lane.variance_y
+
 
             # save the lane center
             self.x = np.array(x_lane_center)
@@ -265,10 +270,6 @@ class acc_demo:
         self.lead_vehicle:VehicleModel = None
         self.v_target = 100/3.6
 
-        # acelleration limits
-        self.a_max = 4
-        self.a_min = - 6
-
         # speed vs distance threshhold
         self.min_dist = 5
         self.min_time = 0.8 #seconds behind leading car
@@ -277,6 +278,19 @@ class acc_demo:
         # controll values
         self.speed_factor = 1
         self.distance_factor = 1
+
+    
+    def acceleration_limit(self, a_desired):
+        """function to map maximum or minium acceleration based on speed, currently WIP"""
+        
+        v = self.ego_vehicle.v
+        # acelleration limits
+        a_max = 2
+        a_min = - 6
+
+        a = np.clip(a_desired, a_min, a_max)
+        
+        return a
 
 
     def update_acceleration(self):
@@ -310,7 +324,7 @@ class acc_demo:
         a = v_dif*self.speed_factor + d_dif*self.distance_factor
 
         # clip the result
-        self.ego_vehicle.a = np.clip(a, self.a_min, self.a_max)
+        self.ego_vehicle.a = self.acceleration_limit(a)
 
     
 
@@ -472,8 +486,6 @@ class PotentialFieldMethod:
         self.dt = time
         
         self.ego.yaw_rate = self.find_ideal_yawrate()
-        if self.longitudal_control is not None:
-            self.longitudal_control.update_acceleration()
         
         # update all vehicles
         for ob in self.moving_obstacles + [self.ego]:
@@ -484,7 +496,7 @@ class PotentialFieldMethod:
 
 
     def check_maneuver(self):
-        """this function updates the behavisour of the car and the potential field based on the current maneuver"""
+        """this function updates the behaviour of the car and the potential field based on the current maneuver"""
         # sort obstacles by distance in travel direction
         vehicles = sorted(self.moving_obstacles + [self.ego], key= lambda ob: ob.x*np.cos(self.ego.yaw) + ob.y*np.sin(self.ego.yaw))
         # this information will be used to decide on maneuver
@@ -519,7 +531,9 @@ class PotentialFieldMethod:
                         # safe distance to both cars is established, end overtake
                         self.follow(vehicles[i+1])
 
-
+        
+        if self.longitudal_control is not None:
+            self.longitudal_control.update_acceleration()
 
 
         
@@ -580,136 +594,55 @@ class PotentialFieldMethod:
 
 
 if __name__ == "__main__":
+    # vizualizing lane boundary
+    lane_width = 3.1
+    x = np.linspace(-10, 10, 10)
+    y = np.zeros_like(x)
+    lane1 = Lane(x,y,'travel')
+    lane2 = Lane(x,y + lane_width,'passing')
+    lane3 = Lane(x,y + 2*lane_width,'passing')
 
-    
-    kwargs_imshow = {
-        'aspect': 2,
-        'origin': 'lower',
-        'cmap': plt.cm.jet,
-        'alpha': 0.8,
-        'vmin': 3*Lane.weight,
-        'vmax': MovingObstacle.weight,
-    }
+    lane1.variance_y*=1
+    lane2.variance_y*=1
 
-    # simulation time
-    dt = 0.2 # time resolution
-    t_max = 28 # end time
-    time = np.arange(0,t_max,dt)
+    lane3.weight = Lane.weight * 0.66
+
+    # create plots
+    y_plot = np.linspace(-10, 10, 100)
+    x_plot = np.zeros_like(y_plot)
+    z_lane1 = lane1.get_risk_potential(x_plot, y_plot)
+    z_lane2 = lane2.get_risk_potential(x_plot, y_plot + lane_width)
+    z_lane3 = lane3.get_risk_potential(x_plot, y_plot + 2*lane_width)
+
+    fig, (ax1, ax2) = plt.subplots(2,1)
+
+    ax1.plot(y_plot, z_lane1, label=lane1.role, color='orange')
+    ax1.plot(y_plot, z_lane2, label=lane2.role, color='yellow')
+    ax1.plot(y_plot, z_lane3, color='yellow')
+
+    ax1.legend()
+
+
 
     pfm = PotentialFieldMethod()
-    # pfm.use_predictive_risk = True
-
-    # set position of car
-    pfm.ego.set_position(0,0, v= 100/3.6, yaw = 0.0)
-    
-    # road setup with two lanes 7 3.5 meters appart
-    lane_x = np.linspace(0, 100, 50)
-    lane_y = np.zeros_like(lane_x)
-    lane1 = Lane(lane_x, lane_y, 'travel')
     pfm.append_lane(lane1)
-        
-    #second lane with less weight
-    lane2 = Lane(lane_x, lane_y - 3.5, 'passing')
     pfm.append_lane(lane2)
+    pfm.append_lane(lane3)
 
-    # traffic participant
-    obstacle = MovingObstacle()
-    obstacle.set_position(20, 0, v=80/3.6)
-    pfm.append_obstacle(obstacle)
+    z_overall = pfm.get_risk_potential(x_plot, y_plot)
 
-    obstacle2 = MovingObstacle()
-    obstacle2.set_position(80, 0, v=80/3.6)
-    pfm.append_obstacle(obstacle2)
-
-
-    pfm_adjusted = deepcopy(pfm)
-    pfm_adjusted.lane_keeping_mode = 'lead vehicle'
-
+    ax2.plot(y_plot, z_overall, label='total')
     
-    pfm.follow(obstacle)
-    pfm_adjusted.follow(pfm_adjusted.moving_obstacles[0])
+    z_lane1 = lane1.get_risk_potential(x_plot, y_plot)
+    z_lane2 = lane2.get_risk_potential(x_plot, y_plot)
+    z_lane3 = lane3.get_risk_potential(x_plot, y_plot)
+    ax2.plot(y_plot, z_lane1, label=lane1.role, color='orange')
+    ax2.plot(y_plot, z_lane2, label=lane2.role, color='yellow')
+    ax2.plot(y_plot, z_lane3, color='red')
 
-
-
-    """animation"""
-    fig, axes = plt.subplots(2, 1)
-
-    # set plot ranges
-    X_origin = np.linspace(-20, 120, 40)
-    Y_origin = np.linspace(-8, 8, 40)
-    x_center = obstacle.x
-    extent = [X_origin[0]+x_center, X_origin[-1]+x_center, Y_origin[0], Y_origin[-1]]
-    X,Y = np.meshgrid(X_origin + x_center, Y_origin)
-
-    # get hazard map
-    Z = [pfm.get_risk_potential(X, Y), pfm_adjusted.get_risk_potential(X, Y)]
-
-    print(Z[1].shape)
-    # plot repulsive field as background
-    backgrounds  = []
-    for i, ax in enumerate(axes):
-        backgrounds.append(ax.imshow(Z[i], extent=extent, **kwargs_imshow))
-
+    for i in range(3):
+        ax2.vlines((i-1/2)*lane_width, -1e5, 0, color='grey', linestyle='--')
     
-    # obstacle outline
-    
-    models = [[pfm.ego, obstacle, obstacle2], [pfm_adjusted.ego, obstacle, obstacle2]]
-    names = ['ego', 'obstacle 1', 'obstacle 2']
-    colors = ['black', 'grey', 'blue']
-
-    car_viz  = [[axes[i].add_patch(car.plotoutline()) for car in models[i]] for i, ax in enumerate(axes)]
-    # text_params = {'va': 'center', 'family': 'monospace',
-    #                 'fontsize': '11'}
-    
-    # texts = [[ax.text(car.x, car.y,name, color=color, **text_params) for car, name, color in zip(models[ia], names, colors)] for ia, ax in enumerate(axes)]
-
-
-    def update(frame):
-        # prediction step
-        yr = pfm.find_ideal_yawrate()
-        tr = pfm.ego.predict_position(yr, pfm.search_time)
-
-        # get the background data
-        x_center = obstacle.x
-        extent = [X_origin[0]+x_center, X_origin[-1]+x_center, Y_origin[0], Y_origin[-1]]
-
-        X,Y = np.meshgrid(X_origin + x_center, Y_origin)
-        Z = [pfm.get_risk_potential(X, Y), pfm_adjusted.get_risk_potential(X, Y)]
-
-        # update plots
-        for ia, ax in enumerate(axes):
-            backgrounds[ia].set_data(Z[ia])
-            backgrounds[ia].set_extent(extent)
-
-            # update car rectangles
-            for i, model in enumerate(models[ia]):
-                car_viz[ia][i].remove()
-                car_viz[ia][i] = ax.add_patch(model.plotoutline(color = colors[i], alpha=0.5))
-                # texts[ia][i].set_x(model.x + 3.5)
-                # texts[ia][i].set_y(model.y)
-
-        # print(frame)
-        if frame == 30:
-            pfm.overtake()
-            pfm_adjusted.overtake()
-        if frame == 100:
-            pfm.overtake()
-            pfm_adjusted.overtake()
-
-        # update simulation
-        pfm.update(dt)
-        pfm_adjusted.update(dt)
-
-
-    axes[0].set_title("adjusting lane weight")
-    
-    axes[1].set_title("adjusting lead car weight")
-
-    for ax in axes:
-        ax.set_xlabel(r"$x$ [m]")
-        ax.set_ylabel(r"$y$ [m]")
-
-    #create animation
-    ani = animation.FuncAnimation(fig=fig, func=update, frames=int(t_max/dt), interval=dt*1000)
+    ax2.legend()
 
     plt.show()
