@@ -135,9 +135,9 @@ class VehicleModel:
 class HazardSource:
     """This class is a blueprint for Hazard Sources like cars or other obstacles"""
     # parameters from original paper
-    weight = 8.99e4
-    variance_x = 27.8**2
-    variance_y = 3.05**2
+    weight = 26606
+    variance_x = 3190
+    variance_y = 2.06
 
     # center of the hazard
     x = 0
@@ -155,14 +155,17 @@ class HazardSource:
         
         return self.risk_function(X-self.x, Y-self.y)
     
-    def risk_function(self, X, Y):
+    def risk_function(self, X, Y, variance_x=None):
         """This is the mathematical base function that defines the potential field"""
-        return self.weight*np.exp(-(X)**2/(self.variance_x)-(Y)**2/(self.variance_y))
+        if variance_x is None:
+            variance_x = self.variance_x
+        return self.weight*np.exp(-(X)**2/(variance_x)-(Y)**2/(self.variance_y))
 
     
     
 class MovingObstacle(HazardSource, VehicleModel):
     
+    variance_x_rear = 3864
 
     def get_risk_potential(self, X, Y):
         """
@@ -188,7 +191,7 @@ class MovingObstacle(HazardSource, VehicleModel):
         # seperate the result into 3 cases
         # case 1 is behind the obstacle
         case1 = np.less_equal(X_local, X_obstacle_rear)
-        result[case1] = self.risk_function(X_local-X_obstacle_rear, Y_local)[case1]
+        result[case1] = self.risk_function(X_local-X_obstacle_rear, Y_local, variance_x=self.variance_x_rear)[case1]
 
         # case 2 is along the obstacle, in this section the function acts as a 1dim gaussean function
         case2 = np.logical_and(np.greater(X_local, X_obstacle_rear), np.less(X_local, X_obstacle_front))
@@ -208,11 +211,15 @@ class MovingObstacle(HazardSource, VehicleModel):
         copy = deepcopy(self)
         result = np.zeros_like(search_time)
 
+
         for i, (x,y) in enumerate(zip(X,Y)):
             # update position on each step
             potential = copy.get_risk_potential(x,y)
             result[i] = potential
-            copy.update_position(search_time[1])
+            if i == 0:
+                copy.update_position(search_time[0])
+            else:
+                copy.update_position(search_time[i] - search_time[i-1])
         return result
 
         
@@ -220,26 +227,25 @@ class MovingObstacle(HazardSource, VehicleModel):
 
 class Lane(HazardSource):
         """Hazard source for adapted for road hazard"""
-
+        role = None
         # set values to recomendation for road type
         weight = -7.41e4
         variance_x = 2.40**2
         variance_y = 2.40**2
         
 
-        def __init__(self, x_lane_center, y_lane_center, role:Literal["travel", "passing", "oncoming"]) -> None:
+        def __init__(self, x_lane_center, y_lane_center) -> None:
             # safe the lane function
-            self.role: Literal["travel", "passing", "oncoming"] = role
-            if self.role == 'travel':
-                self.weight = 1.5*Lane.weight
-            elif self.role == 'passing':
-                self.variance_x = 0.5*Lane.variance_x
-                self.variance_y = 0.5*Lane.variance_y
-
 
             # save the lane center
             self.x = np.array(x_lane_center)
             self.y = np.array(y_lane_center)
+        
+        # def risk_function(self, X, Y, variance_x=None):
+        #     """This is the mathematical base function that defines the potential field"""
+        #     if variance_x is None:
+        #         variance_x = self.variance_x
+        #     return self.weight*np.exp(-(X)**4/(variance_x**2)-(Y)**4/(self.variance_y**2))
 
 
         def get_risk_potential(self, X, Y):
@@ -260,7 +266,14 @@ class Lane(HazardSource):
                 
             return risk_potential
         
-        
+class PassingLane(Lane):
+    role = 'passing'
+    variance_x = -18430
+    variance_y = 130
+    
+class TravelLane(Lane):
+    role = 'travel'
+    weight = -22236
 
 class acc_demo:
     def __init__(self, ego_vehicle:VehicleModel) -> None:
@@ -272,7 +285,7 @@ class acc_demo:
 
         # speed vs distance threshhold
         self.min_dist = 5
-        self.min_time = 0.8 #seconds behind leading car
+        self.min_time = 2 #seconds behind leading car
         self.dist_threshhold = self.min_dist
 
         # controll values
@@ -350,7 +363,7 @@ class PotentialFieldMethod:
         self.ego = VehicleModel()
 
         # initiate adaptive cruise control
-        self.longitudal_control = acc_demo(self.ego)        
+        self.longitudinal_control = acc_demo(self.ego)        
 
         # containers for obstacles and road    
         self.hazard_sources:List[HazardSource] = []
@@ -377,6 +390,9 @@ class PotentialFieldMethod:
         # use risk potential correleting to search time
         self.use_predictive_risk = False
 
+        # how far in the future will the predictive potential be calculated
+        self.prediction_limit = 10
+
         # interpolation of previous get_risk_protential for pd control
         self.use_global_pd = False
         self.d_global = 1
@@ -384,6 +400,18 @@ class PotentialFieldMethod:
         # difference of performance index for pd control
         self.use_local_pd = False
         self.d_local = 1
+
+        # decoupling training parameters
+        self.weight_obstacle = 60349.278211741206
+        self.x_variance_obstacle = 1177.9166243485029
+        self.variance_x_rear = 3863.6748323675447
+        self.y_variance_obstacle = 8.470731258683696
+
+        
+        self.weight_travel = -133252.46432124847
+        self.variance_travel = 28.787440034188542
+        self.weight_passing = -7411.779812919678
+        self.variance_passing = 2.8912033936078103
 
 
     def get_risk_potential(self, X, Y, previous=False, predicive=False):
@@ -396,7 +424,7 @@ class PotentialFieldMethod:
 
             if predicive and hasattr(ob, 'v'):
                 # predictive risk potential on moving objects
-                result += ob.get_predictive_risk_potential(X, Y, self.search_time)
+                result += ob.get_predictive_risk_potential(X, Y, np.clip(self.search_time, 0, self.prediction_limit))
 
             elif previous and hasattr(ob, 'v'):
                 # do one second ago, so it doesnt have to be divided by dt
@@ -458,10 +486,34 @@ class PotentialFieldMethod:
 
         return self.ideal_yaw_rate
     
+    def set_obstacle_parameters(self, params):
+        self.weight_obstacle, self.x_variance_obstacle, self.variance_x_rear, self.y_variance_obstacle = params
+        for obstacle in self.moving_obstacles:
+            obstacle.weight, obstacle.variance_x, obstacle.variance_x_rear, obstacle.variance_y = params
+            
+    def set_lane_parameters(self, params):
+        self.weight_travel, self.variance_travel, self.weight_passing, self.variance_passing = params
+        for lane in self.lanes:
+            if lane.role == 'travel':
+                lane.weight = self.weight_travel
+                lane.variance_x = self.variance_travel
+                lane.variance_y = self.variance_travel
+                
+            if lane.role == 'passing':
+                lane.weight = self.weight_passing
+                lane.variance_x = self.variance_passing
+                lane.variance_y = self.variance_passing
+    
 
     
     def append_obstacle(self, obstacle:MovingObstacle):
         """add obstacle to the environment"""
+
+        obstacle.weight = self.weight_obstacle
+        obstacle.variance_x = self.x_variance_obstacle
+        obstacle.variance_x_rear = self.variance_x_rear
+        obstacle.variance_y = self.y_variance_obstacle
+
         if None in [obstacle.x, obstacle.y, obstacle.yaw]:
             print("position of obstacle is not defined")
         self.moving_obstacles.append(obstacle)
@@ -469,9 +521,9 @@ class PotentialFieldMethod:
         self.hazard_sources.append(obstacle)
 
     
-    def append_lane(self, lane:Lane, weight_factor=1):
+    def append_lane(self, lane:Lane):
         """add lane to the environment"""
-        lane.weight*=weight_factor
+        
         self.lanes.append(lane)
         if lane.role == 'travel':
             self.travel_lane = lane
@@ -490,8 +542,9 @@ class PotentialFieldMethod:
         # update all vehicles
         for ob in self.moving_obstacles + [self.ego]:
             ob.update_position(time)
-
-        self.check_maneuver()
+            
+        if self.longitudinal_control is not None:
+            self.check_maneuver()
 
 
 
@@ -518,7 +571,7 @@ class PotentialFieldMethod:
                 # ego car has overtaken all cars
                 distance_to_following_car = self.ego.distance_to_car(vehicles[i-1])
 
-                if distance_to_following_car > self.longitudal_control.min_dist:
+                if distance_to_following_car > self.longitudinal_control.min_dist:
                     # enough distance has been established, end overtake
                     self.maneuver = 'unimpeded'
             else:
@@ -526,14 +579,14 @@ class PotentialFieldMethod:
                 distance_to_following_car = self.ego.distance_to_car(vehicles[i-1])
                 distance_to_leading_car = self.ego.distance_to_car(vehicles[i+1])
 
-                if distance_to_following_car > self.longitudal_control.min_dist:
-                    if distance_to_leading_car > self.longitudal_control.dist_threshhold:
+                if distance_to_following_car > self.longitudinal_control.min_dist:
+                    if distance_to_leading_car > self.longitudinal_control.dist_threshhold:
                         # safe distance to both cars is established, end overtake
                         self.follow(vehicles[i+1])
 
         
-        if self.longitudal_control is not None:
-            self.longitudal_control.update_acceleration()
+        if self.longitudinal_control is not None:
+            self.longitudinal_control.update_acceleration()
 
 
         
@@ -550,18 +603,23 @@ class PotentialFieldMethod:
             self.maneuver = 'overtake'
 
             # adjust weight lanes
-            self.travel_lane.weight = 1.5*Lane.weight
+            for lane in self.lanes:
+                if lane.role == 'travel':
+                    lane.weight = self.weight_travel
+                if lane.role == 'passing':
+                    lane.weight = self.weight_passing
 
             # revert weight of lead car
-            self.longitudal_control.lead_vehicle.weight = MovingObstacle.weight
+            if self.longitudinal_control is not None:
+                self.longitudinal_control.lead_vehicle.weight = self.weight_obstacle
             
-            # remove lead car from longitudal control
-            self.longitudal_control.lead_vehicle = None
+                # remove lead car from longitudal control
+                self.longitudinal_control.lead_vehicle = None
 
         # print([lane.weight for lane in self._road + self.travel_lane])
 
 
-    def follow(self, vehicle:VehicleModel):
+    def follow(self, vehicle:VehicleModel = None):
         """adjust distance and speed to specified vehicle"""
         print("follow")
         # change maneuver identifier
@@ -569,13 +627,20 @@ class PotentialFieldMethod:
 
         if self.lane_keeping_mode == 'lane':
             # adjust travel lane to be dominant
-            self.travel_lane.weight = 2.5*Lane.weight
+            for lane in self.lanes:
+                if lane.role == 'travel':
+                    lane.weight = self.weight_travel
+                if lane.role == 'passing':
+                    lane.weight = 0
+                    print('set passing lane to 0')
         else: 
             # adjust weight of lead car to be attracting
-            vehicle.weight = - MovingObstacle.weight/4
-            
-        # add new lead car
-        self.longitudal_control.lead_vehicle = vehicle
+            vehicle.weight = - self.weight_obstacle/4
+        
+        if vehicle is not None:
+
+            # add new lead car
+            self.longitudinal_control.lead_vehicle = vehicle
 
         # print([lane.weight for lane in self._road + self.travel_lane])
 
@@ -594,55 +659,59 @@ class PotentialFieldMethod:
 
 
 if __name__ == "__main__":
-    # vizualizing lane boundary
+    # creating lanes
     lane_width = 3.1
-    x = np.linspace(-10, 10, 10)
+    x = np.linspace(0, 200, 100)
     y = np.zeros_like(x)
-    lane1 = Lane(x,y,'travel')
-    lane2 = Lane(x,y + lane_width,'passing')
-    lane3 = Lane(x,y + 2*lane_width,'passing')
+    lane1 = TravelLane(x,y + lane_width/2)
+    lane2 = PassingLane(x,y - lane_width/2)
 
-    lane1.variance_y*=1
-    lane2.variance_y*=1
-
-    lane3.weight = Lane.weight * 0.66
-
-    # create plots
-    y_plot = np.linspace(-10, 10, 100)
-    x_plot = np.zeros_like(y_plot)
-    z_lane1 = lane1.get_risk_potential(x_plot, y_plot)
-    z_lane2 = lane2.get_risk_potential(x_plot, y_plot + lane_width)
-    z_lane3 = lane3.get_risk_potential(x_plot, y_plot + 2*lane_width)
-
-    fig, (ax1, ax2) = plt.subplots(2,1)
-
-    ax1.plot(y_plot, z_lane1, label=lane1.role, color='orange')
-    ax1.plot(y_plot, z_lane2, label=lane2.role, color='yellow')
-    ax1.plot(y_plot, z_lane3, color='yellow')
-
-    ax1.legend()
-
-
+    obstacle = MovingObstacle()
+    obstacle.set_position(50, lane_width/2)
 
     pfm = PotentialFieldMethod()
     pfm.append_lane(lane1)
     pfm.append_lane(lane2)
-    pfm.append_lane(lane3)
+    pfm.append_obstacle(obstacle)
 
-    z_overall = pfm.get_risk_potential(x_plot, y_plot)
+    pfm.set_lane_parameters([-31241.579743653736, 2.3999999999999995, -14820.000000398779, 2.3999999999999995])
+    pfm.set_obstacle_parameters([24009.95020848979, 2582.6414474313897, 3864.199969757219, 1.1439462883974174])
 
-    ax2.plot(y_plot, z_overall, label='total')
     
-    z_lane1 = lane1.get_risk_potential(x_plot, y_plot)
-    z_lane2 = lane2.get_risk_potential(x_plot, y_plot)
-    z_lane3 = lane3.get_risk_potential(x_plot, y_plot)
-    ax2.plot(y_plot, z_lane1, label=lane1.role, color='orange')
-    ax2.plot(y_plot, z_lane2, label=lane2.role, color='yellow')
-    ax2.plot(y_plot, z_lane3, color='red')
+    # plot the actual data
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
 
-    for i in range(3):
-        ax2.vlines((i-1/2)*lane_width, -1e5, 0, color='grey', linestyle='--')
-    
-    ax2.legend()
+
+    # set plot ranges
+    X = np.linspace(0, 150, 50)
+    Y = np.linspace(-lane_width*2, lane_width*2, 50) # np.arange(-7, 7, 0.1)
+    X,Y = np.meshgrid(X,Y)
+
+    # get hazard map
+    Z = pfm.get_risk_potential(X, Y)
+
+
+    # plot repulsive field as stationary background
+    kwargs = {
+        'cmap': plt.cm.jet, 
+        # 'vmin': 0,
+        # 'vmax': MovingObstacle.weight*1.2,
+        'alpha': 0.7,
+    }
+
+
+    ax.plot_surface(X,Y,Z, **kwargs)
+
+    ax.set_yticks(np.linspace(-lane_width*2, lane_width*2, 5))
+
+    ax.set_xlabel(r'$x$ [m]')
+    ax.set_ylabel(r'$y$ [m]')
+    ax.set_zlabel(r'$U_{risk}$')
+
+    ax.set_title('Potential Field Method Demo')
+
+
+
 
     plt.show()
